@@ -1,0 +1,19 @@
+[package]
+name = "simulation"
+version = "0.1.0"
+edition = "2021"
+authors = ["YdrMaster <ydrml@hotmail.com>"]
+readme = "README.md"
+
+[dependencies]
+palette = "*"   # 颜色
+rand = "*"      # 随机性
+async-std = "*" # 异步
+nalgebra = "*"  # 线性代数
+
+monitor-tool = { path = "../monitor-tool-rs", default-features = false, features = [
+    "sender",
+] }
+pm1-control-model = { path = "../pm1-control-model", default-features = false, features = [
+    "predict",
+] }
