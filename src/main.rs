@@ -6,32 +6,10 @@ use pm1_control_model::{Odometry, Optimizer, Physical, StatusPredictor, Trajecto
 use rand::Rng;
 use std::{
     f32::consts::{FRAC_PI_2, FRAC_PI_8},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 macro_rules! vertex {
-    ($x:expr, $y:expr; $level:expr, $tie:expr) => {
-        Vertex {
-            x: $x,
-            y: $y,
-            dir: f32::NAN,
-            level: $level,
-            tie: $tie,
-            _zero: 0,
-        }
-    };
-
-    ($pose:expr; $level:expr, $tie:expr) => {
-        Vertex {
-            x: $pose.translation.vector[0],
-            y: $pose.translation.vector[1],
-            dir: $pose.rotation.angle(),
-            level: $level,
-            tie: $tie,
-            _zero: 0,
-        }
-    };
-
     ($x:expr, $y:expr, $dir:expr; $level:expr, $tie:expr) => {
         Vertex {
             x: $x,
@@ -42,21 +20,32 @@ macro_rules! vertex {
             _zero: 0,
         }
     };
+    ($x:expr, $y:expr; $level:expr, $tie:expr) => {
+        vertex!($x, $y, f32::NAN; $level, $tie)
+    };
+    ($pose:expr; $level:expr, $tie:expr) => {
+        vertex!($pose.translation.vector[0],
+                $pose.translation.vector[1],
+                $pose.rotation.angle();
+                $level, $tie)
+    };
 }
+
+macro_rules! pose {
+    ($x:expr, $y:expr; $theta:expr) => {
+        Isometry2::new(Vector2::new($x, $y), $theta)
+    };
+}
+
+const CHASSIS_TOPIC: &str = "chassis";
+const ODOMETRY_TOPIC: &str = "odometry";
 
 fn main() {
     task::block_on(async {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
         send_config(socket.clone(), Duration::from_secs(3));
 
-        {
-            let mut encoder = Encoder::default();
-            encoder.topic_clear("odometry");
-            let _ = socket
-                .send_to(encoder.encode().as_slice(), "127.0.0.1:12345")
-                .await;
-        }
-        const PERIOD: Duration = Duration::from_millis(50);
+        const PERIOD: Duration = Duration::from_millis(33);
         let mut odometry = Odometry::ZERO;
         let mut predictor = TrajectoryPredictor {
             period: PERIOD,
@@ -67,7 +56,10 @@ fn main() {
             speed: 0.5,
             rudder: FRAC_PI_8,
         };
+
+        let mut time = Instant::now();
         loop {
+            // 更新
             let sign = rand::thread_rng().gen_range(-5..=5);
             let rudder = &mut predictor.predictor.target.rudder;
             let delta = if *rudder > 0.0 {
@@ -85,50 +77,56 @@ fn main() {
             };
             *rudder = (*rudder + delta).clamp(-FRAC_PI_2, FRAC_PI_2);
             odometry += predictor.next().unwrap().1;
+            // 编码并发送
+            let socket = socket.clone();
+            task::spawn(async move {
+                let packet = Encoder::with(|encoder| {
+                    encoder
+                        .topic(ODOMETRY_TOPIC)
+                        .push(vertex!(odometry.pose; 0, false));
+                    encoder.with_topic(CHASSIS_TOPIC, |mut chassis| {
+                        chassis.clear();
+                        ROBOT_OUTLINE
+                            .iter()
+                            .for_each(|v| chassis.push(transform(&odometry.pose, *v)));
 
-            let mut encoder = Encoder::default();
-
-            encoder.topic_push("odometry", vertex!(odometry.pose; 0, false));
-
-            encoder.topic_clear("chassis");
-            for v in ROBOT_OUTLINE {
-                encoder.topic_push("chassis", transform(&odometry.pose, v));
+                        let tr =
+                            odometry.pose * pose!(-0.355, 0.0; predictor.predictor.current.rudder);
+                        RUDDER.iter().for_each(|v| chassis.push(transform(&tr, *v)));
+                    });
+                });
+                let _ = socket.send_to(&packet, "127.0.0.1:12345").await;
+            });
+            // 延时到下一周期
+            time += PERIOD;
+            if let Some(dur) = time.checked_duration_since(Instant::now()) {
+                task::sleep(dur).await;
             }
-
-            let tr = odometry.pose
-                * Isometry2::new(
-                    Vector2::new(-0.355, 0.0),
-                    predictor.predictor.current.rudder,
-                );
-            for v in RUDDER {
-                encoder.topic_push("chassis", transform(&tr, v));
-            }
-
-            let _ = socket
-                .send_to(encoder.encode().as_slice(), "127.0.0.1:12345")
-                .await;
-            task::sleep(Duration::from_millis(50)).await;
         }
     });
 }
 
 fn send_config(socket: Arc<UdpSocket>, period: Duration) {
-    let mut encoder = Encoder::default();
-    encoder.topic_set_capacity("chassis", 100);
-    encoder.topic_set_focus("chassis", 100);
+    let packet = Encoder::with(|encoder| {
+        encoder.with_topic(CHASSIS_TOPIC, |mut chassis| {
+            chassis.set_capacity(100);
+            chassis.set_focus(100);
 
-    let color: [u8; 3] = named::BLACK.into_format().into_raw();
-    encoder.topic_set_color("chassis", 0, RGBA(color[0], color[1], color[2], 192));
-    let color: [u8; 3] = named::GOLD.into_format().into_raw();
-    encoder.topic_set_color("chassis", 1, RGBA(color[0], color[1], color[2], 192));
-
-    encoder.topic_set_capacity("odometry", 20000);
-    encoder.topic_set_focus("odometry", 200);
-    let color: [u8; 3] = named::DARKGREEN.into_format().into_raw();
-    encoder.topic_set_color("odometry", 0, RGBA(color[0], color[1], color[2], 192));
-
-    let packet = encoder.encode();
+            let color: [u8; 3] = named::BLACK.into_format().into_raw();
+            chassis.set_color(0, RGBA(color[0], color[1], color[2], 192));
+            let color: [u8; 3] = named::GOLD.into_format().into_raw();
+            chassis.set_color(1, RGBA(color[0], color[1], color[2], 192));
+        });
+        encoder.with_topic(ODOMETRY_TOPIC, |mut odometry| {
+            odometry.set_capacity(20000);
+            odometry.set_focus(200);
+            let color: [u8; 3] = named::DARKGREEN.into_format().into_raw();
+            odometry.set_color(0, RGBA(color[0], color[1], color[2], 192));
+        });
+    });
     task::spawn(async move {
+        let clear = Encoder::with(|encoder| encoder.topic(ODOMETRY_TOPIC).clear());
+        let _ = socket.send_to(clear.as_slice(), "127.0.0.1:12345").await;
         loop {
             let _ = socket.send_to(&packet, "127.0.0.1:12345").await;
             task::sleep(period).await;
