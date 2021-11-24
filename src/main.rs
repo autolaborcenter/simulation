@@ -117,7 +117,7 @@ fn send_config(socket: Arc<UdpSocket>, period: Duration) {
             chassis.set_capacity(100);
             chassis.set_focus(100);
 
-            chassis.set_color(0, rgba!(BLACK; 1.0));
+            chassis.set_color(0, rgba!(AZURE; 1.0));
             chassis.set_color(1, rgba!(GOLD; 1.0));
         });
         encoder.with_topic(ODOMETRY_TOPIC, |mut odometry| {
