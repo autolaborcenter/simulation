@@ -1,5 +1,5 @@
 use async_std::{net::UdpSocket, sync::Arc, task};
-use monitor_tool::{Encoder, Vertex};
+use monitor_tool::{Encoder, Shape, Vertex};
 use nalgebra::{Isometry2, Point2, Vector2};
 use palette::Srgba;
 use pm1_control_model::{Odometry, Optimizer, Physical, StatusPredictor, TrajectoryPredictor};
@@ -9,24 +9,26 @@ use std::{
 };
 
 macro_rules! vertex {
-    ($x:expr, $y:expr, $dir:expr; $level:expr, $tie:expr) => {
+    ($level:expr; $x:expr, $y:expr; $alpha:expr; $shape:ident, $extra:expr) => {
         monitor_tool::Vertex {
             x: $x,
             y: $y,
-            dir: $dir,
             level: $level,
-            tie: $tie,
+            alpha: $alpha,
             _zero: 0,
+            shape: monitor_tool::Shape::$shape,
+            extra: $extra,
         }
     };
-    ($x:expr, $y:expr; $level:expr, $tie:expr) => {
-        vertex!($x, $y, f32::NAN; $level, $tie)
+    ($level:expr; $x:expr, $y:expr; $alpha:expr) => {
+        vertex!($level; $x, $y; $alpha; Arrow, f32::NAN)
     };
-    ($pose:expr; $level:expr, $tie:expr) => {
-        vertex!($pose.translation.vector[0],
-                $pose.translation.vector[1],
-                $pose.rotation.angle();
-                $level, $tie)
+    ($level:expr; $pose:expr; $alpha:expr) => {
+        vertex!($level;
+                $pose.translation.vector[0],
+                $pose.translation.vector[1];
+                $alpha;
+                Arrow, $pose.rotation.angle())
     };
 }
 
@@ -39,6 +41,8 @@ macro_rules! pose {
         Isometry2::new(Vector2::new($x, $y), $theta)
     };
 }
+
+const LIGHT_TOPIC: &str = "light";
 
 fn main() {
     task::block_on(async {
@@ -68,7 +72,7 @@ fn main() {
                 let packet = Encoder::with(|encoder| {
                     encoder
                         .topic(ODOMETRY_TOPIC)
-                        .push(vertex!(odometry.pose; 0, false));
+                        .push(vertex!(0; odometry.pose; 0));
                     encoder.with_topic(CHASSIS_TOPIC, |mut chassis| {
                         chassis.clear();
                         ROBOT_OUTLINE
@@ -78,6 +82,13 @@ fn main() {
                         let tr =
                             odometry.pose * pose!(-0.355, 0.0; predictor.predictor.current.rudder);
                         RUDDER.iter().for_each(|v| chassis.push(transform(&tr, *v)));
+                    });
+                    encoder.with_topic(LIGHT_TOPIC, |mut light| {
+                        light.clear();
+                        light.push(transform(
+                            &odometry.pose,
+                            vertex!(0; 1.0, 0.0; 0; Circle, 1.0),
+                        ));
                     });
                 });
                 let _ = socket.send_to(&packet, "127.0.0.1:12345").await;
@@ -96,8 +107,8 @@ fn transform(tr: &Isometry2<f32>, mut vertex: Vertex) -> Vertex {
     let p = tr * p;
     vertex.x = p[0];
     vertex.y = p[1];
-    if vertex.dir.is_finite() {
-        vertex.dir += tr.rotation.angle();
+    if vertex.shape == Shape::Arrow && vertex.extra.is_finite() {
+        vertex.extra += tr.rotation.angle();
     }
     vertex
 }
@@ -122,9 +133,14 @@ fn send_config(socket: Arc<UdpSocket>, period: Duration) {
         });
         encoder.with_topic(ODOMETRY_TOPIC, |mut odometry| {
             odometry.set_capacity(20000);
-            odometry.set_focus(200);
+            odometry.set_focus(500);
             odometry.set_color(0, rgba!(GREEN; 0.5));
         });
+        encoder.with_topic(LIGHT_TOPIC, |mut light| {
+            light.set_capacity(10);
+            light.set_focus(10);
+            light.set_color(0, rgba!(RED; 0.5));
+        })
     });
     task::spawn(async move {
         let clear = Encoder::with(|encoder| encoder.topic(ODOMETRY_TOPIC).clear());

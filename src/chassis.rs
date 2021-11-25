@@ -24,34 +24,34 @@ pub(super) fn random_rudder(rudder: &mut f32) {
 }
 
 pub(super) const ROBOT_OUTLINE: [Vertex; 17] = [
-    vertex!(0.25, 0.08; 0, true),
-    vertex!(0.12, 0.14; 0, true),
-    vertex!(0.10, 0.18; 0, true),
-    vertex!(0.10, 0.26; 0, true),
+    vertex!(0; 0.25, 0.08; 0),
+    vertex!(0; 0.12, 0.14; 64),
+    vertex!(0; 0.10, 0.18; 64),
+    vertex!(0; 0.10, 0.26; 64),
     //
-    vertex!(-0.10, 0.26; 0, true),
-    vertex!(-0.10, 0.18; 0, true),
-    vertex!(-0.25, 0.18; 0, true),
-    vertex!(-0.47, 0.12; 0, true),
+    vertex!(0; -0.10, 0.26; 64),
+    vertex!(0; -0.10, 0.18; 64),
+    vertex!(0; -0.25, 0.18; 64),
+    vertex!(0; -0.47, 0.12; 64),
     //
-    vertex!(-0.47, -0.12; 0, true),
-    vertex!(-0.25, -0.18; 0, true),
-    vertex!(-0.10, -0.18; 0, true),
-    vertex!(-0.10, -0.26; 0, true),
+    vertex!(0; -0.47, -0.12; 64),
+    vertex!(0; -0.25, -0.18; 64),
+    vertex!(0; -0.10, -0.18; 64),
+    vertex!(0; -0.10, -0.26; 64),
     //
-    vertex!(0.10, -0.26; 0, true),
-    vertex!(0.10, -0.18; 0, true),
-    vertex!(0.12, -0.14; 0, true),
-    vertex!(0.25, -0.08; 0, true),
+    vertex!(0; 0.10, -0.26; 64),
+    vertex!(0; 0.10, -0.18; 64),
+    vertex!(0; 0.12, -0.14; 64),
+    vertex!(0; 0.25, -0.08; 64),
     //
-    vertex!(0.25, 0.08; 0, false),
+    vertex!(0; 0.25, 0.08; 64),
 ];
 
 pub(super) const RUDDER: [Vertex; 5] = [
-    vertex!(-0.075, 0.06; 1, true),
-    vertex!(-0.075, -0.06; 1, true),
-    vertex!(0.075, -0.06; 1, true),
-    vertex!(0.075, 0.06; 1, true),
+    vertex!(1; -0.075, 0.06; 0),
+    vertex!(1; -0.075, -0.06; 64),
+    vertex!(1; 0.075, -0.06; 64),
+    vertex!(1; 0.075, 0.06; 64),
     //
-    vertex!(-0.075, 0.06; 1, false),
+    vertex!(1; -0.075, 0.06; 64),
 ];
