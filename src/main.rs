@@ -32,21 +32,24 @@ const FOCUS_TOPIC: &str = "focus";
 const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
 const PRE_TOPIC: &str = "pre";
-const FF: f32 = 5.0; // 倍速仿真
+
+const FF: f32 = 4.0; // 倍速仿真
+const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 fn main() {
     task::block_on(async {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
         let mut repos = Tracker::new("path").unwrap();
 
-        let path = repos.read("1105-0").unwrap();
+        let path = repos.read(PATH_TO_TRACK).unwrap();
         send_config(socket.clone(), path, Duration::from_secs(3));
 
         const PERIOD: Duration = Duration::from_millis(40);
+        // 初始位姿
         let mut odometry = Odometry {
             s: 0.0,
             a: 0.0,
-            pose: pose!(-7740.0, -1710.0; 0.0),
+            pose: pose!(-7686.5, -1871.5; 0.0),
         };
         let mut predictor = TrajectoryPredictor {
             period: PERIOD,
@@ -58,12 +61,11 @@ fn main() {
             rudder: FRAC_PI_8,
         };
 
-        let _ = repos.track("1105-0");
+        let _ = repos.track(PATH_TO_TRACK);
         let mut time = Instant::now();
         loop {
             // 更新
             odometry += predictor.next().unwrap().1;
-            println!("{}", odometry.s);
             // 循线
             let ref mut target = predictor.predictor.target;
             if let Some((speed, rudder)) = repos.put_pose(&odometry.pose) {
