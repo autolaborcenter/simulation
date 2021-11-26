@@ -1,4 +1,4 @@
-﻿use monitor_tool::Vertex;
+﻿use monitor_tool::{vertex, Vertex};
 use rand::Rng;
 use std::f32::consts::FRAC_PI_2;
 
