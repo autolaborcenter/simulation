@@ -2,7 +2,7 @@ use async_std::{net::UdpSocket, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use parry2d::na::{Isometry2, Point2, Vector2};
 use path_tracking::Tracker;
-use pm1_control_model::{Odometry, Optimizer, Physical, StatusPredictor, TrajectoryPredictor};
+use pm1_control_model::{Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor, PM1};
 use std::{
     f32::consts::FRAC_PI_8,
     time::{Duration, Instant},
@@ -33,7 +33,7 @@ const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 4.0; // 倍速仿真
+const FF: f32 = 2.0; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 fn main() {
@@ -51,10 +51,10 @@ fn main() {
             a: 0.0,
             pose: pose!(-7686.5, -1871.5; 0.0),
         };
-        let mut predictor = TrajectoryPredictor {
+        let mut predictor = TrajectoryPredictor::<PM1, Pm1Predictor> {
             period: PERIOD,
             model: Default::default(),
-            predictor: StatusPredictor::new(Optimizer::new(0.5, 1.2, PERIOD), PERIOD),
+            predictor: Pm1Predictor::new(Optimizer::new(0.5, 1.2, PERIOD), PERIOD),
         };
         predictor.predictor.target = Physical {
             speed: 0.5,
@@ -65,7 +65,7 @@ fn main() {
         let mut time = Instant::now();
         loop {
             // 更新
-            odometry += predictor.next().unwrap().1;
+            odometry += predictor.next().unwrap();
             // 循线
             let ref mut target = predictor.predictor.target;
             if let Some((speed, rudder)) = repos.put_pose(&odometry.pose) {
@@ -101,7 +101,7 @@ fn main() {
 
                     encoder.with_topic(PRE_TOPIC, |mut pre| {
                         pre.clear();
-                        predictor.take(51).enumerate().for_each(|(i, (_, d))| {
+                        predictor.take(51).enumerate().for_each(|(i, d)| {
                             odometry += d;
                             if i % 5 == 0 {
                                 pre.push(vertex_from_pose!(0; odometry.pose; 0));

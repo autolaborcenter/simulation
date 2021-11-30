@@ -14,7 +14,5 @@ parry2d = { version = "*", features = ["simd-stable"] } # 碰撞检测
 monitor-tool = { path = "../monitor-tool-rs", default-features = false, features = [
     "sender",
 ] }
-pm1-control-model = { path = "../pm1-control-model", default-features = false, features = [
-    "predict",
-] }
+pm1-control-model = { path = "../pm1-control-model", default-features = false }
 path-tracking = { path = "../path-tracking" }
