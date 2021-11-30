@@ -4,13 +4,13 @@ use parry2d::na::{Isometry2, Point2, Vector2};
 use path_tracking::Tracker;
 use pm1_control_model::{Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor, PM1};
 use std::{
-    f32::consts::FRAC_PI_8,
+    f32::consts::{FRAC_PI_8, PI},
     time::{Duration, Instant},
 };
 
 mod chassis;
 
-use chassis::{CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
+use chassis::{CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -86,6 +86,7 @@ fn main() {
                     encoder.with_topic(CHASSIS_TOPIC, |mut chassis| {
                         chassis.clear();
                         chassis.extend(ROBOT_OUTLINE.iter().map(|v| transform(&tr, *v)));
+                        chassis.extend(SIMPLE_OUTLINE.iter().map(|v| transform(&tr, *v)));
 
                         let tr = tr * pose!(-0.355, 0.0; predictor.predictor.current.rudder);
                         chassis.extend(RUDDER.iter().map(|v| transform(&tr, *v)));
@@ -98,15 +99,29 @@ fn main() {
                         light.clear();
                         light.push(transform(&tr, vertex!(0; 0.4, 0.0; Circle, 0.4; 0)));
                     });
-
+                    // 轨迹预测
                     encoder.with_topic(PRE_TOPIC, |mut pre| {
                         pre.clear();
-                        predictor.take(51).enumerate().for_each(|(i, d)| {
+                        let period = predictor.period;
+                        let mut t = Duration::ZERO;
+                        let mut s = odometry.s + 0.1;
+                        let mut a = odometry.a + FRAC_PI_8;
+
+                        let max_s = odometry.s + 5.0;
+                        let max_a = odometry.s + PI * 2.0;
+                        let max_t = Duration::from_secs(10);
+                        for d in predictor {
+                            t += period;
                             odometry += d;
-                            if i % 5 == 0 {
+                            if odometry.s > s || odometry.a > a {
+                                s = odometry.s + 0.1;
+                                a = odometry.a + FRAC_PI_8;
                                 pre.push(vertex_from_pose!(0; odometry.pose; 0));
                             }
-                        });
+                            if odometry.s > max_s || odometry.a > max_a || t > max_t {
+                                break;
+                            }
+                        }
                     });
                 });
                 let _ = socket.send_to(&packet, "127.0.0.1:12345").await;
@@ -136,13 +151,17 @@ fn send_config(socket: Arc<UdpSocket>, path: Vec<Isometry2<f32>>, period: Durati
             CHASSIS_TOPIC,
             100,
             0,
-            &[(0, rgba!(AZURE; 1.0)), (1, rgba!(GOLD; 1.0))],
+            &[
+                (0, rgba!(AZURE; 1.0)),
+                (1, rgba!(GOLD; 1.0)),
+                (2, rgba!(ORANGE; 1.0)),
+            ],
             |_| {},
         );
         encoder.config_topic(ODOMETRY_TOPIC, 20000, 0, &[(0, rgba!(GREEN; 1.0))], |_| {});
         encoder.config_topic(FOCUS_TOPIC, 1, 1, &[(0, rgba!(BLACK; 0.0))], |_| {});
         encoder.config_topic(LIGHT_TOPIC, 1, 0, &[(0, rgba!(RED; 1.0))], |_| {});
-        encoder.config_topic(PRE_TOPIC, 100, 0, &[(0, rgba!(ORANGE; 1.0))], |_| {});
+        encoder.config_topic(PRE_TOPIC, 100, 0, &[(0, rgba!(SKYBLUE; 0.3))], |_| {});
         encoder.config_topic(
             PATH_TOPIC,
             10000,

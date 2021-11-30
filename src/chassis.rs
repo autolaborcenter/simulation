@@ -55,3 +55,13 @@ pub(super) const RUDDER: [Vertex; 5] = [
     //
     vertex!(1; -0.075, 0.06; 64),
 ];
+
+pub(super) const SIMPLE_OUTLINE: [Vertex; 6] = [
+    vertex!(2; 0.32, 0.0; 0),
+    vertex!(2; 0.10, 0.26; 64),
+    vertex!(2; -0.47, 0.26; 64),
+    vertex!(2; -0.47, -0.26; 64),
+    vertex!(2; 0.10, -0.26; 64),
+    //
+    vertex!(2; 0.32, 0.0; 64),
+];
