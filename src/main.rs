@@ -1,7 +1,7 @@
-use async_std::{net::UdpSocket, sync::Arc, task};
+use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use parry2d::na::{Isometry2, Point2, Vector2};
-use path_tracking::Tracker;
+use path_tracking::{PathFile, Tracker};
 use pm1_control_model::{Odometry, Optimizer, Pm1Predictor, TrajectoryPredictor};
 use std::{
     f32::consts::{FRAC_PI_2, FRAC_PI_8, PI},
@@ -36,7 +36,7 @@ const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 1.0; // 倍速仿真
+const FF: f32 = 0.5; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const RGBD_METERS: f32 = 4.0;
@@ -67,12 +67,18 @@ fn main() {
             TRICYCLE_OUTLINE.iter().map(|v| tr * v).collect::<Vec<_>>()
         };
         let obstables = vec![tricycle];
+        let path = path_tracking::Path::new(
+            PathFile::open(PathBuf::from(format!("path/{}.path", PATH_TO_TRACK)).as_path())
+                .await
+                .unwrap(),
+            0.4,
+            10,
+        );
         // 发送固定物体
-        let path = repos.read(PATH_TO_TRACK).unwrap();
         send_config(
             socket.clone(),
             Duration::from_secs(3),
-            path,
+            &path,
             obstables.clone(),
         );
         // 循线仿真
@@ -176,11 +182,11 @@ fn transform(tr: &Isometry2<f32>, mut vertex: Vertex) -> Vertex {
 fn send_config(
     socket: Arc<UdpSocket>,
     period: Duration,
-    path: Vec<Isometry2<f32>>,
+    path: &path_tracking::Path,
     obstacles: impl IntoIterator<Item = Vec<Point2<f32>>>,
 ) {
-    let packet = Encoder::with(|encoder| {
-        encoder.config_topic(
+    let packet = Encoder::with(|figure| {
+        figure.config_topic(
             CHASSIS_TOPIC,
             100,
             0,
@@ -192,34 +198,36 @@ fn send_config(
             ],
             |_| {},
         );
-        encoder.config_topic(ODOMETRY_TOPIC, 20000, 0, &[(0, rgba!(VIOLET; 0.1))], |_| {});
-        encoder.config_topic(FOCUS_TOPIC, 1, 1, &[(0, rgba!(BLACK; 0.0))], |_| {});
-        encoder.config_topic(LIGHT_TOPIC, 1, 0, &[(0, rgba!(RED; 1.0))], |_| {});
-        encoder.config_topic(LIDAR_TOPIC, 2000, 0, &[(0, rgba!(GOLD; 0.5))], |_| {});
-        encoder.config_topic(PRE_TOPIC, 100, 0, &[(0, rgba!(SKYBLUE; 0.3))], |_| {});
-        encoder.config_topic(
+        figure.config_topic(ODOMETRY_TOPIC, 20000, 0, &[(0, rgba!(VIOLET; 0.1))], |_| {});
+        figure.config_topic(FOCUS_TOPIC, 1, 1, &[(0, rgba!(BLACK; 0.0))], |_| {});
+        figure.config_topic(LIGHT_TOPIC, 1, 0, &[(0, rgba!(RED; 1.0))], |_| {});
+        figure.config_topic(LIDAR_TOPIC, 2000, 0, &[(0, rgba!(GOLD; 0.5))], |_| {});
+        figure.config_topic(PRE_TOPIC, 100, 0, &[(0, rgba!(SKYBLUE; 0.3))], |_| {});
+        figure.config_topic(
             OBSTACLES_TOPIC,
             10000,
             0,
             &[(0, rgba!(AZURE; 0.6))],
-            |mut encoder| {
-                encoder.clear();
+            |mut topic| {
+                topic.clear();
                 for o in obstacles {
                     if let Some(p) = o.last() {
-                        encoder.push(vertex!(0; p[0], p[1]; 0));
-                        encoder.extend(o.into_iter().map(|p| vertex!(0; p[0], p[1]; 64)));
+                        topic.push(vertex!(0; p[0], p[1]; 0));
+                        topic.extend(o.into_iter().map(|p| vertex!(0; p[0], p[1]; 64)));
                     }
                 }
             },
         );
-        encoder.config_topic(
+        figure.config_topic(
             PATH_TOPIC,
             10000,
             0,
             &[(0, rgba!(GRAY; 0.4))],
-            |mut encoder| {
-                encoder.clear();
-                encoder.extend(path.iter().map(|v| vertex_from_pose!(0; v; 64)));
+            |mut topic| {
+                topic.clear();
+                for v in &path.0 {
+                    topic.extend(v.iter().map(|v| vertex_from_pose!(0; v; 64)));
+                }
             },
         );
     });
