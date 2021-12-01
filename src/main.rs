@@ -2,15 +2,19 @@ use async_std::{net::UdpSocket, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use parry2d::na::{Isometry2, Point2, Vector2};
 use path_tracking::Tracker;
-use pm1_control_model::{Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor, PM1};
+use pm1_control_model::{Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor};
 use std::{
-    f32::consts::{FRAC_PI_8, PI},
+    f32::consts::{FRAC_PI_3, FRAC_PI_8, PI},
     time::{Duration, Instant},
 };
 
 mod chassis;
+mod obstacles;
 
-use chassis::{CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
+use chassis::{rgbd_bounds, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
+use obstacles::TRICYCLE_OUTLINE;
+
+use crate::obstacles::OBSTACLES_TOPIC;
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -33,16 +37,13 @@ const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 2.0; // 倍速仿真
+const FF: f32 = 3.0; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 fn main() {
     task::block_on(async {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
         let mut repos = Tracker::new("path").unwrap();
-
-        let path = repos.read(PATH_TO_TRACK).unwrap();
-        send_config(socket.clone(), path, Duration::from_secs(3));
 
         const PERIOD: Duration = Duration::from_millis(40);
         // 初始位姿
@@ -51,7 +52,8 @@ fn main() {
             a: 0.0,
             pose: pose!(-7686.5, -1871.5; 0.0),
         };
-        let mut predictor = TrajectoryPredictor::<PM1, Pm1Predictor> {
+        // 底盘运动仿真
+        let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
             period: PERIOD,
             model: Default::default(),
             predictor: Pm1Predictor::new(Optimizer::new(0.5, 1.2, PERIOD), PERIOD),
@@ -60,7 +62,19 @@ fn main() {
             speed: 0.5,
             rudder: FRAC_PI_8,
         };
-
+        // 深度相机
+        let rgbd = rgbd_bounds(4.0, 85.0);
+        let tricicle = {
+            let tr = pose!(-7685.5, -1880.0; FRAC_PI_3);
+            TRICYCLE_OUTLINE
+                .iter()
+                .map(|v| transform(&tr, *v))
+                .collect::<Vec<_>>()
+        };
+        // 发送固定物体
+        let path = repos.read(PATH_TO_TRACK).unwrap();
+        send_config(socket.clone(), Duration::from_secs(3), path, vec![tricicle]);
+        // 循线仿真
         let _ = repos.track(PATH_TO_TRACK);
         let mut time = Instant::now();
         loop {
@@ -77,6 +91,7 @@ fn main() {
             // 编码并发送
             let socket = socket.clone();
             let predictor = predictor.clone();
+            let rgbd = rgbd.clone();
             task::spawn(async move {
                 let tr = odometry.pose;
                 let packet = Encoder::with(|encoder| {
@@ -87,13 +102,14 @@ fn main() {
                         chassis.clear();
                         chassis.extend(ROBOT_OUTLINE.iter().map(|v| transform(&tr, *v)));
                         chassis.extend(SIMPLE_OUTLINE.iter().map(|v| transform(&tr, *v)));
+                        chassis.extend(rgbd.iter().map(|v| transform(&tr, *v)));
 
                         let tr = tr * pose!(-0.355, 0.0; predictor.predictor.current.rudder);
                         chassis.extend(RUDDER.iter().map(|v| transform(&tr, *v)));
                     });
                     encoder.with_topic(FOCUS_TOPIC, |mut light| {
                         light.clear();
-                        light.push(transform(&tr, vertex!(0; 0.0, 0.0; Circle, 3.0; 0)));
+                        light.push(transform(&tr, vertex!(0; 2.0, 0.0; Circle, 3.0; 0)));
                     });
                     encoder.with_topic(LIGHT_TOPIC, |mut light| {
                         light.clear();
@@ -145,7 +161,12 @@ fn transform(tr: &Isometry2<f32>, mut vertex: Vertex) -> Vertex {
     vertex
 }
 
-fn send_config(socket: Arc<UdpSocket>, path: Vec<Isometry2<f32>>, period: Duration) {
+fn send_config(
+    socket: Arc<UdpSocket>,
+    period: Duration,
+    path: Vec<Isometry2<f32>>,
+    obstacles: impl IntoIterator<Item = Vec<Vertex>>,
+) {
     let packet = Encoder::with(|encoder| {
         encoder.config_topic(
             CHASSIS_TOPIC,
@@ -155,18 +176,31 @@ fn send_config(socket: Arc<UdpSocket>, path: Vec<Isometry2<f32>>, period: Durati
                 (0, rgba!(AZURE; 1.0)),
                 (1, rgba!(GOLD; 1.0)),
                 (2, rgba!(ORANGE; 1.0)),
+                (3, rgba!(GREEN; 0.5)),
             ],
             |_| {},
         );
-        encoder.config_topic(ODOMETRY_TOPIC, 20000, 0, &[(0, rgba!(GREEN; 1.0))], |_| {});
+        encoder.config_topic(ODOMETRY_TOPIC, 20000, 0, &[(0, rgba!(VIOLET; 0.1))], |_| {});
         encoder.config_topic(FOCUS_TOPIC, 1, 1, &[(0, rgba!(BLACK; 0.0))], |_| {});
         encoder.config_topic(LIGHT_TOPIC, 1, 0, &[(0, rgba!(RED; 1.0))], |_| {});
         encoder.config_topic(PRE_TOPIC, 100, 0, &[(0, rgba!(SKYBLUE; 0.3))], |_| {});
         encoder.config_topic(
+            OBSTACLES_TOPIC,
+            10000,
+            0,
+            &[(0, rgba!(AZURE; 0.6))],
+            |mut encoder| {
+                encoder.clear();
+                for o in obstacles {
+                    encoder.extend(o.into_iter());
+                }
+            },
+        );
+        encoder.config_topic(
             PATH_TOPIC,
             10000,
             0,
-            &[(0, rgba!(GRAY; 0.5))],
+            &[(0, rgba!(GRAY; 0.4))],
             |mut encoder| {
                 encoder.clear();
                 encoder.extend(path.iter().map(|v| vertex_from_pose!(0; v; 64)));

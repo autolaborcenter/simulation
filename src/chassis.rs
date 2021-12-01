@@ -65,3 +65,12 @@ pub(super) const SIMPLE_OUTLINE: [Vertex; 6] = [
     //
     vertex!(2; 0.32, 0.0; 64),
 ];
+
+pub(super) fn rgbd_bounds(radius: f32, angle: f32) -> Vec<Vertex> {
+    let mut result = Vec::new();
+    let (sin, cos) = (angle.to_radians() * 0.5).sin_cos();
+    result.push(vertex!(3; cos * radius, sin * radius; 0));
+    result.push(vertex!(3; 0.0, 0.0; Circle, radius; 64));
+    result.push(vertex!(3; cos * radius, -sin * radius; 64));
+    result
+}
