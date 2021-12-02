@@ -12,7 +12,7 @@ mod chassis;
 mod obstacles;
 
 use chassis::{rgbd_bounds, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
-use obstacles::{fit, ray_cast, LIDAR_TOPIC, OBSTACLES_TOPIC, TRICYCLE_OUTLINE};
+use obstacles::{expand, fit, ray_cast, LIDAR_TOPIC, OBSTACLES_TOPIC, TRICYCLE_OUTLINE};
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -126,11 +126,8 @@ fn main() {
                     });
                     figure.with_topic(LIDAR_TOPIC, |mut topic| {
                         topic.clear();
-                        for s in fit(&lidar, 0.6, 0.04) {
-                            let mut iter = s.into_iter();
-                            let p = tr * iter.next().unwrap();
-                            topic.push(vertex!(0; p[0], p[1]; 0));
-                            topic.extend(iter.map(|p| {
+                        for v in expand(fit(&lidar, 0.6, 0.04), 0.3) {
+                            topic.push_polygon(v.into_iter().map(|p| {
                                 let p = tr * p;
                                 vertex!(0; p[0], p[1]; 255)
                             }));
@@ -214,10 +211,7 @@ fn send_config(
             |mut topic| {
                 topic.clear();
                 for o in obstacles {
-                    if let Some(p) = o.last() {
-                        topic.push(vertex!(0; p[0], p[1]; 0));
-                        topic.extend(o.into_iter().map(|p| vertex!(0; p[0], p[1]; 64)));
-                    }
+                    topic.push_polygon(o.into_iter().map(|p| vertex!(0; p[0], p[1]; 64)));
                 }
             },
         );

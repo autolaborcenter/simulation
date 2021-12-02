@@ -1,7 +1,7 @@
 ﻿use super::{point, vector};
 use parry2d::{
     bounding_volume::AABB,
-    na::Point2,
+    na::{Point2, Vector2},
     query::{Ray, RayCast},
     shape::ConvexPolygon,
 };
@@ -113,6 +113,10 @@ pub(super) fn fit(points: &[Polar], max_len: f32, max_diff: f32) -> Vec<Vec<Poin
                 // 初始化折线
                 current.clear();
                 current.push(point);
+                // 只有一点的折线直接丢弃
+                if tail.len() < 2 {
+                    result.pop();
+                }
                 result.push(current.clone());
             }
             // 不可通过
@@ -169,4 +173,46 @@ pub(super) fn fit(points: &[Polar], max_len: f32, max_diff: f32) -> Vec<Vec<Poin
         }
     }
     result
+}
+
+pub(super) fn expand(points: Vec<Vec<Point2<f32>>>, len: f32) -> Vec<Vec<Point2<f32>>> {
+    points
+        .into_iter()
+        .map(|mut v| {
+            let temp = v
+                .windows(3)
+                .rev()
+                .flat_map(|triple| {
+                    let c = triple[1];
+                    let d0 = (triple[0] - c).normalize();
+                    let d1 = (triple[2] - c).normalize();
+                    if d0.dot(&d1) < -0.8 {
+                        vec![
+                            c + len * normal(d1),
+                            c - len * (d0 + d1).normalize(),
+                            c - len * normal(d0),
+                        ]
+                    } else {
+                        vec![c + (d0 + d1) * len / cross_numeric(d0, d1)]
+                    }
+                })
+                .collect::<Vec<_>>();
+            v.push(v[v.len() - 1] + len * normal(v[v.len() - 1] - v[v.len() - 2]).normalize());
+            v.extend(temp);
+            v.push(v[0] - len * normal(v[0] - v[1]).normalize());
+            v
+        })
+        .collect()
+}
+
+/// 叉积
+#[inline]
+fn cross_numeric(v0: Vector2<f32>, v1: Vector2<f32>) -> f32 {
+    v0[1] * v1[0] - v0[0] * v1[1]
+}
+
+/// 法向量
+#[inline]
+fn normal(v: Vector2<f32>) -> Vector2<f32> {
+    vector(-v[1], v[0])
 }
