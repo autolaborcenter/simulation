@@ -12,7 +12,7 @@ mod chassis;
 mod obstacles;
 
 use chassis::{rgbd_bounds, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
-use obstacles::{ray_cast, LIDAR_TOPIC, OBSTACLES_TOPIC, TRICYCLE_OUTLINE};
+use obstacles::{fit, ray_cast, LIDAR_TOPIC, OBSTACLES_TOPIC, TRICYCLE_OUTLINE};
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -126,12 +126,15 @@ fn main() {
                     });
                     figure.with_topic(LIDAR_TOPIC, |mut topic| {
                         topic.clear();
-                        topic.extend(
-                            lidar
-                                .iter()
-                                .map(|p| tr * p.to_point())
-                                .map(|p| vertex!(0; p[0], p[1]; 0)),
-                        );
+                        for s in fit(&lidar, 0.6, 0.04) {
+                            let mut iter = s.into_iter();
+                            let p = tr * iter.next().unwrap();
+                            topic.push(vertex!(0; p[0], p[1]; 0));
+                            topic.extend(iter.map(|p| {
+                                let p = tr * p;
+                                vertex!(0; p[0], p[1]; 255)
+                            }));
+                        }
                     });
                     // 轨迹预测
                     figure.with_topic(PRE_TOPIC, |mut topic| {
@@ -201,7 +204,7 @@ fn send_config(
         figure.config_topic(ODOMETRY_TOPIC, 20000, 0, &[(0, rgba!(VIOLET; 0.1))], |_| {});
         figure.config_topic(FOCUS_TOPIC, 1, 1, &[(0, rgba!(BLACK; 0.0))], |_| {});
         figure.config_topic(LIGHT_TOPIC, 1, 0, &[(0, rgba!(RED; 1.0))], |_| {});
-        figure.config_topic(LIDAR_TOPIC, 2000, 0, &[(0, rgba!(GOLD; 0.5))], |_| {});
+        figure.config_topic(LIDAR_TOPIC, 2000, 0, &[(0, rgba!(GOLD; 1.0))], |_| {});
         figure.config_topic(PRE_TOPIC, 100, 0, &[(0, rgba!(SKYBLUE; 0.3))], |_| {});
         figure.config_topic(
             OBSTACLES_TOPIC,
