@@ -5,6 +5,7 @@ use std::f32::consts::FRAC_PI_2;
 pub(super) const CHASSIS_TOPIC: &str = "chassis";
 pub(super) const ODOMETRY_TOPIC: &str = "odometry";
 
+#[allow(dead_code)]
 pub(super) fn random_rudder(rudder: &mut f32) {
     let sign = rand::thread_rng().gen_range(-5..=5);
     let delta = if *rudder > 0.0 {

@@ -2,7 +2,7 @@ use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use parry2d::na::{Isometry2, Point2, Vector2};
 use path_tracking::{PathFile, Tracker};
-use pm1_control_model::{Odometry, Optimizer, Pm1Predictor, TrajectoryPredictor};
+use pm1_control_model::{isometry, Odometry, Optimizer, Pm1Predictor, TrajectoryPredictor};
 use std::{
     f32::consts::{FRAC_PI_2, FRAC_PI_8, PI},
     time::{Duration, Instant},
@@ -12,7 +12,9 @@ mod chassis;
 mod obstacles;
 
 use chassis::{rgbd_bounds, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
-use obstacles::{expand, fit, ray_cast, LIDAR_TOPIC, OBSTACLES_TOPIC, TRICYCLE_OUTLINE};
+use obstacles::{expand, fit, ray_cast, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC};
+
+use crate::obstacles::melkman;
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -52,7 +54,7 @@ fn main() {
         let mut odometry = Odometry {
             s: 0.0,
             a: 0.0,
-            pose: pose!(-7686.0, -1875.0; -FRAC_PI_2),
+            pose: pose!(-7686.0, -1875.5; -FRAC_PI_2),
         };
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
@@ -62,11 +64,16 @@ fn main() {
         };
         // 深度相机
         let rgbd = rgbd_bounds(RGBD_METERS, RGBD_DEGREES);
-        let tricycle = {
-            let tr = pose!(-7685.5, -1880.0; -0.0);
-            TRICYCLE_OUTLINE.iter().map(|v| tr * v).collect::<Vec<_>>()
-        };
-        let obstables = vec![tricycle];
+        let obstables = vec![
+            {
+                let tr = isometry(-7685.0, -1880.0, 0.0, 0.5);
+                崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
+            },
+            {
+                let tr = isometry(-7689.0, -1880.0, 0.0, 0.5);
+                崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
+            },
+        ];
         let path = path_tracking::Path::new(
             PathFile::open(PathBuf::from(format!("path/{}.path", PATH_TO_TRACK)).as_path())
                 .await
@@ -126,10 +133,20 @@ fn main() {
                     });
                     figure.with_topic(LIDAR_TOPIC, |mut topic| {
                         topic.clear();
-                        for v in expand(fit(&lidar, 0.6, 0.04), 0.3) {
+                        topic.extend(
+                            lidar
+                                .iter()
+                                .map(|p| tr * p.to_point())
+                                .map(|p| vertex!(0; p[0], p[1]; 0)),
+                        );
+                        let obj = fit(&lidar, RGBD_METERS * 2.0, 0.6, 0.04)
+                            .into_iter()
+                            .map(|obj| melkman(obj));
+                        for mut v in obj {
+                            // expand(&mut v, 0.3);
                             topic.push_polygon(v.into_iter().map(|p| {
                                 let p = tr * p;
-                                vertex!(0; p[0], p[1]; 255)
+                                vertex!(1; p[0], p[1]; 255)
                             }));
                         }
                     });
@@ -201,7 +218,13 @@ fn send_config(
         figure.config_topic(ODOMETRY_TOPIC, 20000, 0, &[(0, rgba!(VIOLET; 0.1))], |_| {});
         figure.config_topic(FOCUS_TOPIC, 1, 1, &[(0, rgba!(BLACK; 0.0))], |_| {});
         figure.config_topic(LIGHT_TOPIC, 1, 0, &[(0, rgba!(RED; 1.0))], |_| {});
-        figure.config_topic(LIDAR_TOPIC, 2000, 0, &[(0, rgba!(GOLD; 1.0))], |_| {});
+        figure.config_topic(
+            LIDAR_TOPIC,
+            2000,
+            0,
+            &[(0, rgba!(DARKGOLDENROD; 0.3)), (1, rgba!(GOLD; 1.0))],
+            |_| {},
+        );
         figure.config_topic(PRE_TOPIC, 100, 0, &[(0, rgba!(SKYBLUE; 0.3))], |_| {});
         figure.config_topic(
             OBSTACLES_TOPIC,

@@ -2,22 +2,41 @@
 use parry2d::{
     bounding_volume::AABB,
     na::{Point2, Vector2},
-    query::{Ray, RayCast},
-    shape::ConvexPolygon,
 };
 use pm1_control_model::{isometry, Isometry2};
 use rand::{thread_rng, Rng};
-use std::f32::consts::PI;
+use std::{collections::VecDeque, f32::consts::PI};
+
+mod segment;
+
+use segment::Segment;
 
 pub(super) const OBSTACLES_TOPIC: &str = "obstacles";
 pub(super) const LIDAR_TOPIC: &str = "lidar";
 
+#[allow(dead_code)]
 pub(super) const TRICYCLE_OUTLINE: [Point2<f32>; 5] = [
     point(1.0, 0.0),
     point(0.0, 0.75),
     point(-2.0, 0.75),
     point(-2.0, -0.75),
     point(0.0, -0.75),
+];
+
+#[allow(dead_code)]
+pub(super) const 崎岖轮廓: [Point2<f32>; 12] = [
+    point(0.0, 0.0),
+    point(2.0, -3.0),
+    point(4.0, -2.0),
+    point(2.0, -2.0),
+    point(3.0, -1.2),
+    point(2.0, -0.4),
+    point(4.0, 0.0),
+    point(2.0, 0.4),
+    point(3.0, 1.2),
+    point(2.0, 2.0),
+    point(4.0, 2.0),
+    point(2.0, 3.0),
 ];
 
 #[derive(Clone, Copy)]
@@ -49,11 +68,7 @@ pub(super) fn ray_cast(
         obstacles
             .iter()
             .filter(|v| v.iter().any(|p| aabb.contains_local_point(p)))
-            .filter_map(|v| {
-                ConvexPolygon::from_convex_polyline(
-                    v.iter().map(|p| to_local * p).collect::<Vec<_>>(),
-                )
-            })
+            .map(|v| v.iter().map(|p| to_local * p).collect::<Vec<_>>())
             .collect::<Vec<_>>()
     };
     //
@@ -64,13 +79,10 @@ pub(super) fn ray_cast(
     let mut theta = -dir_range;
     while theta <= dir_range {
         let (sin, cos) = theta.sin_cos();
-        let ray = Ray {
-            origin: ORIGIN,
-            dir: vector(cos, sin),
-        };
+        let ray = Segment(ORIGIN, point(cos * radius, sin * radius));
         let rho = obstacles
             .iter()
-            .filter_map(|c| c.cast_local_ray(&ray, radius, true))
+            .filter_map(|c| ray.ray_cast(c))
             .fold(f32::INFINITY, |min, l| f32::min(min, l))
             + thread_rng().gen_range(-0.01..0.01);
         if rho.is_normal() {
@@ -82,16 +94,29 @@ pub(super) fn ray_cast(
 }
 
 /// 线段拟合
-pub(super) fn fit(points: &[Polar], max_len: f32, max_diff: f32) -> Vec<Vec<Point2<f32>>> {
+pub(super) fn fit(
+    points: &[Polar],
+    radius: f32,
+    max_len: f32,
+    max_diff: f32,
+) -> Vec<Vec<Point2<f32>>> {
     let mut source = points.iter();
     let mut result = vec![];
     if let Some(polar) = source.next() {
         // 最后一点的极坐标，用于分集
         let mut last = *polar;
+        let point = polar.to_point();
         // 最后一个线段上所有点
-        let mut current = vec![polar.to_point()];
+        let mut current = vec![point];
         // 初始化折线
-        result.push(current.clone());
+        result.push(vec![
+            Polar {
+                rho: radius,
+                theta: polar.theta,
+            }
+            .to_point(),
+            point,
+        ]);
 
         for polar in source {
             // 最后一条折线
@@ -102,22 +127,34 @@ pub(super) fn fit(points: &[Polar], max_len: f32, max_diff: f32) -> Vec<Vec<Poin
             let len = {
                 let rho = f32::max(polar.rho, last.rho);
                 let theta = (polar.theta - last.theta).abs();
-                rho * (theta * 0.5).sin()
+                2.0 * rho * (theta * 0.5).sin()
             };
             // 可以通过，分割
             if len > max_len {
                 // 保存上一个线段尾
                 if current.len() > 1 {
-                    tail.push(*current.last().unwrap());
+                    let last = *current.last().unwrap();
+                    tail.push(last);
+                    tail.push(Point2 {
+                        coords: last.coords.normalize() * radius,
+                    });
                 }
                 // 初始化折线
                 current.clear();
                 current.push(point);
                 // 只有一点的折线直接丢弃
-                if tail.len() < 2 {
+                if tail.len() < 3 {
                     result.pop();
                 }
-                result.push(current.clone());
+                // 初始化折线
+                result.push(vec![
+                    Polar {
+                        rho: radius,
+                        theta: polar.theta,
+                    }
+                    .to_point(),
+                    point,
+                ]);
             }
             // 不可通过
             else {
@@ -169,40 +206,78 @@ pub(super) fn fit(points: &[Polar], max_len: f32, max_diff: f32) -> Vec<Vec<Poin
             last = *polar;
         }
         if current.len() > 1 {
-            result.last_mut().unwrap().push(*current.last().unwrap());
+            let tail = result.last_mut().unwrap();
+            let last = *current.last().unwrap();
+            tail.push(last);
+            tail.push(Point2 {
+                coords: last.coords.normalize() * radius,
+            });
         }
     }
     result
 }
 
-pub(super) fn expand(points: Vec<Vec<Point2<f32>>>, len: f32) -> Vec<Vec<Point2<f32>>> {
-    points
-        .into_iter()
-        .map(|mut v| {
-            let temp = v
-                .windows(3)
-                .rev()
-                .flat_map(|triple| {
-                    let c = triple[1];
-                    let d0 = (triple[0] - c).normalize();
-                    let d1 = (triple[2] - c).normalize();
-                    if d0.dot(&d1) < -0.8 {
-                        vec![
-                            c + len * normal(d1),
-                            c - len * (d0 + d1).normalize(),
-                            c - len * normal(d0),
-                        ]
+pub(super) fn melkman(src: Vec<Point2<f32>>) -> Vec<Point2<f32>> {
+    match src.len() {
+        0 | 1 | 2 | 3 => src,
+        _ => {
+            let mut buf = VecDeque::new();
+            {
+                // 压前 3 个点
+                buf.extend(&src[..2]);
+                buf.push_back(src[2]);
+                buf.push_front(src[2]);
+            }
+            for p in &src[3..] {
+                loop {
+                    let a = buf[1];
+                    let b = buf[0];
+                    if !is_left(a, b, *p) {
+                        buf.pop_front();
                     } else {
-                        vec![c + (d0 + d1) * len / cross_numeric(d0, d1)]
+                        break;
                     }
-                })
-                .collect::<Vec<_>>();
-            v.push(v[v.len() - 1] + len * normal(v[v.len() - 1] - v[v.len() - 2]).normalize());
-            v.extend(temp);
-            v.push(v[0] - len * normal(v[0] - v[1]).normalize());
-            v
+                }
+                loop {
+                    let a = buf[buf.len() - 2];
+                    let b = buf[buf.len() - 1];
+                    if is_left(a, b, *p) {
+                        buf.pop_back();
+                    } else {
+                        break;
+                    }
+                }
+                buf.push_back(*p);
+                buf.push_front(*p);
+            }
+            buf.into_iter().collect()
+        }
+    }
+}
+
+pub(super) fn expand(v: &mut Vec<Point2<f32>>, len: f32) {
+    let temp = v
+        .windows(3)
+        .rev()
+        .flat_map(|triple| {
+            let c = triple[1];
+            let d0 = (triple[0] - c).normalize();
+            let d1 = (triple[2] - c).normalize();
+            let cross = cross_numeric(d0, d1);
+            if -0.6 < cross && cross < 0.0 {
+                vec![
+                    c + len * normal(d1),
+                    c - len * (d0 + d1).normalize(),
+                    c - len * normal(d0),
+                ]
+            } else {
+                vec![c + (d0 + d1) * len / cross]
+            }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    v.push(v[v.len() - 1] + len * normal(v[v.len() - 1] - v[v.len() - 2]).normalize());
+    v.extend(temp);
+    v.push(v[0] - len * normal(v[0] - v[1]).normalize());
 }
 
 /// 叉积
@@ -211,8 +286,26 @@ fn cross_numeric(v0: Vector2<f32>, v1: Vector2<f32>) -> f32 {
     v0[1] * v1[0] - v0[0] * v1[1]
 }
 
+/// `c` 在 `ab` 左侧
+#[inline]
+fn is_left(a: Point2<f32>, b: Point2<f32>, c: Point2<f32>) -> bool {
+    let ab = b - a;
+    let bc = c - b;
+    cross_numeric(ab, bc) < 0.0
+}
+
 /// 法向量
 #[inline]
 fn normal(v: Vector2<f32>) -> Vector2<f32> {
     vector(-v[1], v[0])
+}
+
+#[test]
+fn test_is_left() {
+    const A: Point2<f32> = point(0.0, 0.0);
+    const B: Point2<f32> = point(1.0, 0.0);
+    const C: Point2<f32> = point(2.0, 1.0);
+    const D: Point2<f32> = point(2.0, -1.0);
+    assert!(is_left(A, B, C));
+    assert!(!is_left(A, B, D));
 }
