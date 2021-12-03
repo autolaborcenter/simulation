@@ -219,43 +219,30 @@ pub(super) fn fit(
 
 // 快速凸包
 pub(super) fn melkman(src: Vec<Point2<f32>>) -> Vec<Point2<f32>> {
-    match src.len() {
-        0 | 1 | 2 | 3 => src,
-        _ => {
-            let mut buf = VecDeque::new();
-            {
-                // 压前 3 个点
-                buf.extend(&src[..2]);
-                buf.push_back(src[2]);
-                buf.push_front(src[2]);
+    if src.len() <= 3 {
+        src
+    } else {
+        let mut buf = VecDeque::from_iter(src.iter().take(3).cloned());
+        for p in src.into_iter().skip(3) {
+            // 复制最后一点形成闭环
+            let last = *buf.back().unwrap();
+            buf.push_front(last);
+            // 新点在队头线段的左侧
+            while !is_left(buf[1], buf[0], p) {
+                buf.pop_front();
             }
-            for p in &src[3..] {
-                loop {
-                    let a = buf[1];
-                    let b = buf[0];
-                    if !is_left(a, b, *p) {
-                        buf.pop_front();
-                    } else {
-                        break;
-                    }
-                }
-                loop {
-                    let a = buf[buf.len() - 2];
-                    let b = buf[buf.len() - 1];
-                    if is_left(a, b, *p) {
-                        buf.pop_back();
-                    } else {
-                        break;
-                    }
-                }
-                buf.push_back(*p);
-                buf.push_front(*p);
+            // 新点在队尾线段的右侧
+            while is_left(buf[buf.len() - 2], buf[buf.len() - 1], p) {
+                buf.pop_back();
             }
-            buf.into_iter().skip(1).collect()
+            // 添加新点
+            buf.push_back(p);
         }
+        buf.into_iter().collect()
     }
 }
 
+/// 扩张凸多边形
 pub(super) fn enlarge(mut v: Vec<Point2<f32>>, len: f32) -> Vec<Point2<f32>> {
     v.extend_from_within(..2);
     v.windows(3)
@@ -265,7 +252,8 @@ pub(super) fn enlarge(mut v: Vec<Point2<f32>>, len: f32) -> Vec<Point2<f32>> {
             let d0 = (triple[0] - c).normalize();
             let d1 = (triple[2] - c).normalize();
             let cross = cross_numeric(d0, d1);
-            if -0.6 < cross && cross < 0.0 {
+            // 锐角切成直角
+            if cross.is_sign_negative() && d0.dot(&d1).is_sign_positive() {
                 vec![
                     c + len * normal(d1),
                     c - len * (d0 + d1).normalize(),
@@ -278,7 +266,7 @@ pub(super) fn enlarge(mut v: Vec<Point2<f32>>, len: f32) -> Vec<Point2<f32>> {
         .collect::<Vec<_>>()
 }
 
-/// 叉积
+/// 叉积 = 两向量围成平行四边形面积
 #[inline]
 fn cross_numeric(v0: Vector2<f32>, v1: Vector2<f32>) -> f32 {
     v0[1] * v1[0] - v0[0] * v1[1]
@@ -287,9 +275,7 @@ fn cross_numeric(v0: Vector2<f32>, v1: Vector2<f32>) -> f32 {
 /// `c` 在 `ab` 左侧
 #[inline]
 fn is_left(a: Point2<f32>, b: Point2<f32>, c: Point2<f32>) -> bool {
-    let ab = b - a;
-    let bc = c - b;
-    cross_numeric(ab, bc) < 0.0
+    cross_numeric(b - a, c - b).is_sign_negative()
 }
 
 /// 法向量
