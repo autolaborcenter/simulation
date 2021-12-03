@@ -217,6 +217,7 @@ pub(super) fn fit(
     result
 }
 
+// 快速凸包
 pub(super) fn melkman(src: Vec<Point2<f32>>) -> Vec<Point2<f32>> {
     match src.len() {
         0 | 1 | 2 | 3 => src,
@@ -250,14 +251,14 @@ pub(super) fn melkman(src: Vec<Point2<f32>>) -> Vec<Point2<f32>> {
                 buf.push_back(*p);
                 buf.push_front(*p);
             }
-            buf.into_iter().collect()
+            buf.into_iter().skip(1).collect()
         }
     }
 }
 
-pub(super) fn expand(v: &mut Vec<Point2<f32>>, len: f32) {
-    let temp = v
-        .windows(3)
+pub(super) fn enlarge(mut v: Vec<Point2<f32>>, len: f32) -> Vec<Point2<f32>> {
+    v.extend_from_within(..2);
+    v.windows(3)
         .rev()
         .flat_map(|triple| {
             let c = triple[1];
@@ -274,10 +275,7 @@ pub(super) fn expand(v: &mut Vec<Point2<f32>>, len: f32) {
                 vec![c + (d0 + d1) * len / cross]
             }
         })
-        .collect::<Vec<_>>();
-    v.push(v[v.len() - 1] + len * normal(v[v.len() - 1] - v[v.len() - 2]).normalize());
-    v.extend(temp);
-    v.push(v[0] - len * normal(v[0] - v[1]).normalize());
+        .collect::<Vec<_>>()
 }
 
 /// 叉积

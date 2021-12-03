@@ -12,7 +12,7 @@ mod chassis;
 mod obstacles;
 
 use chassis::{rgbd_bounds, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
-use obstacles::{expand, fit, ray_cast, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC};
+use obstacles::{enlarge, fit, ray_cast, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC};
 
 use crate::obstacles::melkman;
 
@@ -42,7 +42,7 @@ const FF: f32 = 0.5; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const RGBD_METERS: f32 = 4.0;
-const RGBD_DEGREES: f32 = 51.0;
+const RGBD_DEGREES: f32 = 85.0;
 
 fn main() {
     task::block_on(async {
@@ -139,16 +139,15 @@ fn main() {
                                 .map(|p| tr * p.to_point())
                                 .map(|p| vertex!(0; p[0], p[1]; 0)),
                         );
-                        let obj = fit(&lidar, RGBD_METERS * 2.0, 0.6, 0.04)
+                        fit(&lidar, RGBD_METERS * 2.0, 0.6, 0.04)
                             .into_iter()
-                            .map(|obj| melkman(obj));
-                        for mut v in obj {
-                            // expand(&mut v, 0.3);
-                            topic.push_polygon(v.into_iter().map(|p| {
-                                let p = tr * p;
-                                vertex!(1; p[0], p[1]; 255)
-                            }));
-                        }
+                            .map(|obj| enlarge(melkman(obj), 0.3))
+                            .for_each(|v| {
+                                topic.push_polygon(v.into_iter().map(|p| {
+                                    let p = tr * p;
+                                    vertex!(1; p[0], p[1]; 255)
+                                }));
+                            });
                     });
                     // 轨迹预测
                     figure.with_topic(PRE_TOPIC, |mut topic| {
