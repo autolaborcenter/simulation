@@ -1,4 +1,4 @@
-﻿use super::{point, vector};
+﻿use super::{point, vector, Sector};
 use parry2d::{
     bounding_volume::AABB,
     na::{Point2, Vector2},
@@ -56,8 +56,7 @@ impl Polar {
 pub(super) fn ray_cast(
     pose: Isometry2<f32>,
     obstacles: &Vec<Vec<Point2<f32>>>,
-    radius: f32,
-    degrees: f32,
+    range: Sector,
 ) -> Vec<Polar> {
     // 转本地多边形障碍物
     let obstacles = {
@@ -75,11 +74,16 @@ pub(super) fn ray_cast(
     let mut result = Vec::new();
     const ORIGIN: Point2<f32> = point(0.0, 0.0);
     const STEP: f32 = PI / 360.0;
-    let dir_range = (degrees * 0.5).to_radians();
+    let dir_range = range.angle * 0.5;
     let mut theta = -dir_range;
     while theta <= dir_range {
         let (sin, cos) = theta.sin_cos();
-        let ray = Segment(ORIGIN, point(cos * radius, sin * radius));
+        let ray = Segment(
+            ORIGIN,
+            Point2::<f32> {
+                coords: vector(cos, sin) * range.radius,
+            },
+        );
         let rho = obstacles
             .iter()
             .filter_map(|c| ray.ray_cast(c))
@@ -139,13 +143,8 @@ pub(super) fn fit(
                         coords: last.coords.normalize() * radius,
                     });
                 }
-                // 初始化折线
                 current.clear();
                 current.push(point);
-                // 只有一点的折线直接丢弃
-                if tail.len() < 3 {
-                    result.pop();
-                }
                 // 初始化折线
                 result.push(vec![
                     Polar {
@@ -243,10 +242,10 @@ pub(super) fn melkman(src: Vec<Point2<f32>>) -> Vec<Point2<f32>> {
 }
 
 /// 扩张凸多边形
-pub(super) fn enlarge(mut v: Vec<Point2<f32>>, len: f32) -> Vec<Point2<f32>> {
-    v.extend_from_within(..2);
+///
+/// 视作折线且两个端点将被丢弃
+pub(super) fn enlarge(v: &[Point2<f32>], len: f32) -> Vec<Point2<f32>> {
     v.windows(3)
-        .rev()
         .flat_map(|triple| {
             let c = triple[1];
             let d0 = (triple[0] - c).normalize();
@@ -255,9 +254,9 @@ pub(super) fn enlarge(mut v: Vec<Point2<f32>>, len: f32) -> Vec<Point2<f32>> {
             // 锐角切成直角
             if cross.is_sign_negative() && d0.dot(&d1).is_sign_positive() {
                 vec![
-                    c + len * normal(d1),
-                    c - len * (d0 + d1).normalize(),
                     c - len * normal(d0),
+                    c - len * (d0 + d1).normalize(),
+                    c + len * normal(d1),
                 ]
             } else {
                 vec![c + (d0 + d1) * len / cross]

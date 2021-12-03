@@ -1,10 +1,10 @@
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use parry2d::na::{Isometry2, Point2, Vector2};
-use path_tracking::{PathFile, Tracker};
+use path_tracking::{PathFile, Sector, Tracker};
 use pm1_control_model::{isometry, Odometry, Optimizer, Pm1Predictor, TrajectoryPredictor};
 use std::{
-    f32::consts::{FRAC_PI_2, FRAC_PI_8, PI},
+    f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_8, PI},
     time::{Duration, Instant},
 };
 
@@ -12,9 +12,7 @@ mod chassis;
 mod obstacles;
 
 use chassis::{rgbd_bounds, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
-use obstacles::{enlarge, fit, ray_cast, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC};
-
-use crate::obstacles::melkman;
+use obstacles::{enlarge, fit, melkman, ray_cast, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC};
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -63,7 +61,11 @@ fn main() {
             predictor: Pm1Predictor::new(Optimizer::new(0.5, 1.2, PERIOD), PERIOD),
         };
         // 深度相机
-        let rgbd = rgbd_bounds(RGBD_METERS, RGBD_DEGREES);
+        let rgbd_bounds = rgbd_bounds(RGBD_METERS, RGBD_DEGREES);
+        let rgbd = Sector {
+            radius: RGBD_METERS,
+            angle: RGBD_DEGREES.to_radians(),
+        };
         let obstables = vec![
             {
                 let tr = isometry(-7685.0, -1880.0, 0.0, 0.5);
@@ -78,7 +80,10 @@ fn main() {
             PathFile::open(PathBuf::from(format!("path/{}.path", PATH_TO_TRACK)).as_path())
                 .await
                 .unwrap(),
-            0.4,
+            Sector {
+                radius: 0.4,
+                angle: FRAC_PI_3,
+            },
             10,
         );
         // 发送固定物体
@@ -105,8 +110,8 @@ fn main() {
             // 编码并发送
             let socket = socket.clone();
             let predictor = predictor.clone();
-            let rgbd = rgbd.clone();
-            let lidar = ray_cast(odometry.pose, &obstables, RGBD_METERS, RGBD_DEGREES);
+            let rgbd_bounds = rgbd_bounds.clone();
+            let lidar = ray_cast(odometry.pose, &obstables, rgbd);
             task::spawn(async move {
                 let tr = odometry.pose;
                 let packet = Encoder::with(|figure| {
@@ -122,7 +127,7 @@ fn main() {
                         topic.clear();
                         topic.extend(ROBOT_OUTLINE.iter().map(|v| transform(&tr, *v)));
                         topic.extend(SIMPLE_OUTLINE.iter().map(|v| transform(&tr, *v)));
-                        topic.extend(rgbd.iter().map(|v| transform(&tr, *v)));
+                        topic.extend(rgbd_bounds.iter().map(|v| transform(&tr, *v)));
 
                         let tr = tr * pose!(-0.355, 0.0; predictor.predictor.current.rudder);
                         topic.extend(RUDDER.iter().map(|v| transform(&tr, *v)));
@@ -141,12 +146,23 @@ fn main() {
                         );
                         fit(&lidar, RGBD_METERS * 2.0, 0.6, 0.04)
                             .into_iter()
-                            .map(|obj| enlarge(melkman(obj), 0.3))
+                            .map(|obj| enlarge(&melkman(obj), 0.3))
+                            .filter(|v| !v.is_empty())
                             .for_each(|v| {
-                                topic.push_polygon(v.into_iter().map(|p| {
+                                let head = tr
+                                    * Point2 {
+                                        coords: v[0].coords.normalize() * rgbd.radius,
+                                    };
+                                let tail = tr
+                                    * Point2 {
+                                        coords: v[v.len() - 1].coords.normalize() * rgbd.radius,
+                                    };
+                                topic.push(vertex!(1; head[0], head[1]; 0));
+                                topic.extend(v.into_iter().map(|p| {
                                     let p = tr * p;
                                     vertex!(1; p[0], p[1]; 255)
                                 }));
+                                topic.push(vertex!(1; tail[0], tail[1]; 255));
                             });
                     });
                     // 轨迹预测
@@ -233,7 +249,7 @@ fn send_config(
             |mut topic| {
                 topic.clear();
                 for o in obstacles {
-                    topic.push_polygon(o.into_iter().map(|p| vertex!(0; p[0], p[1]; 64)));
+                    topic.extend_polygon(o.into_iter().map(|p| vertex!(0; p[0], p[1]; 64)));
                 }
             },
         );
