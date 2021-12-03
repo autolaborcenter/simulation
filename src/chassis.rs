@@ -1,4 +1,5 @@
-﻿use monitor_tool::{vertex, Vertex};
+﻿use crate::{transform, vector, Isometry2};
+use monitor_tool::{vertex, Vertex};
 use rand::Rng;
 use std::f32::consts::FRAC_PI_2;
 
@@ -67,11 +68,19 @@ pub(super) const SIMPLE_OUTLINE: [Vertex; 6] = [
     vertex!(2; 0.32, 0.0; 64),
 ];
 
-pub(super) fn rgbd_bounds(radius: f32, degrees: f32) -> Vec<Vertex> {
-    let mut result = Vec::new();
+pub(super) fn rgbd_bounds(
+    rgbd_on_chassis: Isometry2<f32>,
+    radius: f32,
+    degrees: f32,
+) -> Vec<Vertex> {
     let (sin, cos) = (degrees.to_radians() * 0.5).sin_cos();
-    result.push(vertex!(3; cos * radius, sin * radius; 0));
-    result.push(vertex!(3; 0.0, 0.0; Circle, radius; 64));
-    result.push(vertex!(3; cos * radius, -sin * radius; 64));
-    result
+    let d = vector(cos, sin) * radius;
+    vec![
+        transform(&rgbd_on_chassis, vertex!(3; d[0],  d[1]; 0)),
+        transform(
+            &rgbd_on_chassis,
+            vertex!(3;  0.0,   0.0; Circle, radius; 64),
+        ),
+        transform(&rgbd_on_chassis, vertex!(3; d[0], -d[1]; 64)),
+    ]
 }

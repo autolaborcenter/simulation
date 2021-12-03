@@ -1,5 +1,5 @@
 ﻿use crate::{isometry, point, vector, Point2, Vector2};
-use std::{collections::VecDeque, f32::consts::PI, ops::Range};
+use std::{collections::VecDeque, f32::consts::PI};
 
 mod outlines;
 mod ray_cast;
@@ -10,8 +10,8 @@ pub(super) use ray_cast::ray_cast;
 /// 障碍物对象
 #[derive(Clone)]
 pub struct Obstacle {
-    pub(super) radius: f32,
-    pub(super) angle: Range<f32>,
+    radius: f32,
+    angles: Vec<f32>,
     pub(super) wall: Vec<Point2<f32>>,
 }
 
@@ -22,32 +22,52 @@ impl Obstacle {
         if wall.is_empty() {
             None
         } else {
-            let start = wall.first().unwrap();
-            let start = start[1].atan2(start[0]);
-            let end = wall.last().unwrap().coords;
-            let end = end[1].atan2(end[0]);
+            let mut angles = wall.iter().map(|p| p[1].atan2(p[0])).collect::<Vec<_>>();
+            for i in 1..angles.len() - 1 {
+                if angles[i] <= angles[i - 1] {
+                    angles[i] += PI * 2.0;
+                }
+            }
             Some(Self {
                 radius,
-                angle: Range {
-                    start,
-                    end: if end >= start { end } else { end + PI * 2.0 },
-                },
+                angles,
                 wall,
             })
         }
     }
 
+    /// 判断点是否在障碍物中
     pub fn contains(&self, p: Point2<f32>) -> bool {
         let mut angle = p[1].atan2(p[0]);
-        if angle < self.angle.start {
+        if angle < self.angles[0] {
             angle += PI * 2.0;
         }
-        if angle < self.angle.end {
-            false
+        match self.angles.binary_search_by(|r| {
+            use std::cmp::Ordering::*;
+            if *r < angle {
+                Less
+            } else if *r > angle {
+                Greater
+            } else {
+                Equal
+            }
+        }) {
+            Ok(i) => p.coords.norm_squared() > self.wall[i].coords.norm_squared(),
+            Err(i) => i != 0 && i != self.wall.len() && !is_left(self.wall[i - 1], self.wall[i], p),
+        }
+    }
+
+    /// 找一个较近的边
+    pub fn closer_edge(&self) -> f32 {
+        let a = self.angles[0];
+        let mut b = *self.angles.last().unwrap();
+        if b > PI {
+            b -= PI * 2.0;
+        }
+        if a.abs() < b.abs() {
+            a
         } else {
-            self.wall
-                .windows(2)
-                .all(|pair| is_left(pair[0], pair[1], p))
+            b
         }
     }
 }
@@ -56,6 +76,16 @@ impl Obstacle {
 pub(super) struct Polar {
     rho: f32,
     theta: f32,
+}
+
+impl From<Point2<f32>> for Polar {
+    #[inline]
+    fn from(p: Point2<f32>) -> Self {
+        Self {
+            rho: p.coords.norm(),
+            theta: p.coords[1].atan2(p.coords[0]),
+        }
+    }
 }
 
 impl Polar {
@@ -67,17 +97,17 @@ impl Polar {
 
 /// 线段拟合
 pub(super) fn fit(
-    points: &[Polar],
+    points: impl IntoIterator<Item = Point2<f32>>,
     radius: f32,
     max_len: f32,
     max_diff: f32,
 ) -> Vec<Vec<Point2<f32>>> {
-    let mut source = points.iter();
+    let mut source = points.into_iter();
     let mut result = vec![];
-    if let Some(polar) = source.next() {
+    if let Some(point) = source.next() {
+        let polar = Polar::from(point);
         // 最后一点的极坐标，用于分集
-        let mut last = *polar;
-        let point = polar.to_point();
+        let mut last = polar;
         // 最后一个线段上所有点
         let mut current = vec![point];
         // 初始化折线
@@ -90,11 +120,10 @@ pub(super) fn fit(
             point,
         ]);
 
-        for polar in source {
+        for point in source {
+            let polar = Polar::from(point);
             // 最后一条折线
             let tail = result.last_mut().unwrap();
-
-            let point = polar.to_point();
             // 判断与上一个点形成的狭缝能否通过
             let len = {
                 let rho = f32::max(polar.rho, last.rho);
@@ -170,7 +199,7 @@ pub(super) fn fit(
                     tail.push(last);
                 }
             }
-            last = *polar;
+            last = polar;
         }
         if current.len() > 1 {
             let tail = result.last_mut().unwrap();
@@ -253,7 +282,7 @@ fn normal(v: Vector2<f32>) -> Vector2<f32> {
 
 #[test]
 fn test_is_left() {
-    const A: Point2<f32> = point(0.0, 0.0);
+    const A: Point2<f32> = point(2.3799877, -1.7332762);
     const B: Point2<f32> = point(1.0, 0.0);
     const C: Point2<f32> = point(2.0, 1.0);
     const D: Point2<f32> = point(2.0, -1.0);

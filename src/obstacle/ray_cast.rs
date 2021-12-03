@@ -8,10 +8,12 @@ type Point = Point2<f32>;
 
 /// 放出射线生成点云
 pub(crate) fn ray_cast(
-    pose: Isometry2<f32>,
+    robot_on_world: Isometry2<f32>,
+    lidar_on_robot: Isometry2<f32>,
     obstacles: &Vec<Vec<Point2<f32>>>,
     range: Sector,
-) -> Vec<Polar> {
+) -> Vec<Point> {
+    let pose = robot_on_world * lidar_on_robot;
     // 转本地多边形障碍物
     let obstacles = {
         let x0 = pose.translation.vector[0];
@@ -44,7 +46,7 @@ pub(crate) fn ray_cast(
             .fold(f32::INFINITY, |min, l| f32::min(min, l))
             + thread_rng().gen_range(-0.01..0.01);
         if rho.is_normal() {
-            result.push(Polar { rho, theta });
+            result.push(Polar { rho, theta }.to_point());
         }
         theta += STEP;
     }

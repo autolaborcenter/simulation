@@ -1,8 +1,10 @@
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use parry2d::na::{Isometry2, Point2, Vector2};
-use path_tracking::{PathFile, Sector, Tracker};
-use pm1_control_model::{isometry, Odometry, Optimizer, Pm1Predictor, TrajectoryPredictor};
+use path_tracking::{PathFile, PromoteConfig, RelocateConfig, Sector};
+use pm1_control_model::{
+    isometry, Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor,
+};
 use std::{
     f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_8, PI},
     time::{Duration, Instant},
@@ -10,9 +12,11 @@ use std::{
 
 mod chassis;
 mod obstacle;
+mod path_builder;
 
 use chassis::{rgbd_bounds, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
 use obstacle::{fit, melkman, ray_cast, Obstacle, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC};
+use path_builder::PathBuilder;
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -34,20 +38,20 @@ macro_rules! pose {
 const FOCUS_TOPIC: &str = "focus";
 const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
+const LOCAL_TOPIC: &str = "local";
 const PRE_TOPIC: &str = "pre";
 
 const FF: f32 = 0.5; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
+const PERIOD: Duration = Duration::from_millis(40);
+const RGBD_ON_CHASSIS: Isometry2<f32> = isometry(-0.3, 0.0, 1.0, 0.0);
 const RGBD_METERS: f32 = 4.0;
 const RGBD_DEGREES: f32 = 85.0;
 
 fn main() {
     task::block_on(async {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
-        let mut repos = Tracker::new("path").unwrap();
-
-        const PERIOD: Duration = Duration::from_millis(40);
         // 初始位姿
         let mut odometry = Odometry {
             s: 0.0,
@@ -61,7 +65,7 @@ fn main() {
             predictor: Pm1Predictor::new(Optimizer::new(0.5, 1.2, PERIOD), PERIOD),
         };
         // 深度相机
-        let rgbd_bounds = rgbd_bounds(RGBD_METERS, RGBD_DEGREES);
+        let rgbd_bounds = rgbd_bounds(RGBD_ON_CHASSIS, RGBD_METERS, RGBD_DEGREES);
         let rgbd = Sector {
             radius: RGBD_METERS,
             angle: RGBD_DEGREES.to_radians(),
@@ -76,6 +80,7 @@ fn main() {
                 崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
             },
         ];
+        // 路径
         let path = path_tracking::Path::new(
             PathFile::open(PathBuf::from(format!("path/{}.path", PATH_TO_TRACK)).as_path())
                 .await
@@ -94,25 +99,81 @@ fn main() {
             obstables.clone(),
         );
         // 循线仿真
-        let _ = repos.track(PATH_TO_TRACK);
+        let mut index = path
+            .relocate(RelocateConfig {
+                pose: odometry.pose,
+                index: (0, 0),
+                light_radius: 0.4,
+                search_range: rgbd,
+                r#loop: true,
+            })
+            .unwrap();
         let mut time = Instant::now();
         loop {
             // 更新位姿
             predictor.next().map(|d| odometry += d);
             // 构造障碍物对象
-            let lidar = ray_cast(odometry.pose, &obstables, rgbd);
-            let obstacles = fit(&lidar, RGBD_METERS * 2.0, 0.6, 0.04)
+            let lidar = ray_cast(odometry.pose, RGBD_ON_CHASSIS, &obstables, rgbd);
+            let obstacles = fit(lidar.clone(), RGBD_METERS * 2.0, 0.6, 0.04)
                 .into_iter()
                 .filter_map(|obj| Obstacle::new(&melkman(obj), 0.6, rgbd.radius))
                 .collect::<Vec<_>>();
             // 循线
-            let ref mut target = predictor.predictor.target;
-            if let Some((speed, rudder)) = repos.put_pose(&odometry.pose) {
-                target.speed = speed * 0.4;
-                target.rudder = rudder;
-            } else {
-                target.speed = 0.0;
+            if let Some(i) = path.promote(PromoteConfig {
+                pose: odometry.pose,
+                index,
+                search_range: rgbd,
+            }) {
+                index.1 = i;
             }
+            // 计算局部路径
+            let local = {
+                let checker = rgbd.get_checker();
+                let to_local = odometry.pose.inverse();
+                let mut local = path
+                    .slice(index)
+                    .iter()
+                    .map(|p| to_local * p)
+                    .take_while(|p| checker.contains_pose(*p));
+                let mut modified = Vec::new();
+                while let Some(pose) = local.next() {
+                    let p = Point2 {
+                        coords: pose.translation.vector,
+                    };
+                    if let Some(o) = obstacles.iter().find(|o| o.contains(p)) {
+                        let target = loop {
+                            if let Some(pose) = local.next() {
+                                // 离开障碍
+                                if !o.contains(Point2 {
+                                    coords: pose.translation.vector,
+                                }) {
+                                    break pose;
+                                }
+                            } else {
+                                // 离开视野
+                                let (sin, cos) = o.closer_edge().sin_cos();
+                                break isometry(cos * rgbd.radius, sin * rgbd.radius, cos, sin);
+                            }
+                        };
+                        modified.clear();
+                        modified.extend(PathBuilder::from(target));
+                        break;
+                    } else {
+                        modified.push(pose);
+                    }
+                }
+                modified.extend(local);
+                modified
+            };
+            predictor.predictor.target = if !local.is_empty() {
+                if let Some(rudder) = path_tracking::track::track(&local, 0.4) {
+                    Physical { speed: 0.4, rudder }
+                } else {
+                    Physical::RELEASED
+                }
+            } else {
+                Physical::RELEASED
+            };
             // 编码并发送
             let socket = socket.clone();
             let predictor = predictor.clone();
@@ -142,11 +203,12 @@ fn main() {
                         topic.push(transform(&tr, vertex!(0; 0.4, 0.0; Circle, 0.4; 0)));
                     });
                     figure.with_topic(LIDAR_TOPIC, |mut topic| {
+                        let tr = tr * RGBD_ON_CHASSIS;
                         topic.clear();
                         topic.extend(
                             lidar
                                 .iter()
-                                .map(|p| tr * p.to_point())
+                                .map(|p| tr * p)
                                 .map(|p| vertex!(0; p[0], p[1]; 0)),
                         );
                         obstacles.iter().map(|o| &o.wall).for_each(|v| {
@@ -165,6 +227,15 @@ fn main() {
                             }));
                             topic.push(vertex!(1; tail[0], tail[1]; 255));
                         });
+                    });
+                    figure.with_topic(LOCAL_TOPIC, |mut topic| {
+                        topic.clear();
+                        topic.extend(
+                            local
+                                .iter()
+                                .map(|p| tr * p)
+                                .map(|p| vertex_from_pose!(0; p; 0)),
+                        );
                     });
                     // 轨迹预测
                     figure.with_topic(PRE_TOPIC, |mut topic| {
@@ -221,7 +292,7 @@ fn send_config(
     let packet = Encoder::with(|figure| {
         figure.config_topic(
             CHASSIS_TOPIC,
-            100,
+            u32::MAX,
             0,
             &[
                 (0, rgba!(AZURE; 1.0)),
@@ -236,15 +307,15 @@ fn send_config(
         figure.config_topic(LIGHT_TOPIC, 1, 0, &[(0, rgba!(RED; 1.0))], |_| {});
         figure.config_topic(
             LIDAR_TOPIC,
-            2000,
+            u32::MAX,
             0,
             &[(0, rgba!(DARKGOLDENROD; 0.3)), (1, rgba!(GOLD; 1.0))],
             |_| {},
         );
-        figure.config_topic(PRE_TOPIC, 100, 0, &[(0, rgba!(SKYBLUE; 0.3))], |_| {});
+        figure.config_topic(PRE_TOPIC, u32::MAX, 0, &[(0, rgba!(SKYBLUE; 0.3))], |_| {});
         figure.config_topic(
             OBSTACLES_TOPIC,
-            10000,
+            u32::MAX,
             0,
             &[(0, rgba!(AZURE; 0.6))],
             |mut topic| {
@@ -256,7 +327,7 @@ fn send_config(
         );
         figure.config_topic(
             PATH_TOPIC,
-            10000,
+            u32::MAX,
             0,
             &[(0, rgba!(GRAY; 0.4))],
             |mut topic| {
@@ -266,6 +337,7 @@ fn send_config(
                 }
             },
         );
+        figure.config_topic(LOCAL_TOPIC, u32::MAX, 0, &[(0, rgba!(VIOLET; 0.8))], |_| {});
     });
     task::spawn(async move {
         let clear = Encoder::with(|encoder| encoder.topic(ODOMETRY_TOPIC).clear());
