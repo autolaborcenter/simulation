@@ -1,43 +1,56 @@
-﻿use super::{point, vector, Sector};
-use parry2d::{
-    bounding_volume::AABB,
-    na::{Point2, Vector2},
-};
-use pm1_control_model::{isometry, Isometry2};
-use rand::{thread_rng, Rng};
-use std::{collections::VecDeque, f32::consts::PI};
+﻿use crate::{isometry, point, vector, Point2, Vector2};
+use std::{collections::VecDeque, f32::consts::PI, ops::Range};
 
-mod segment;
+mod outlines;
+mod ray_cast;
 
-use segment::Segment;
+pub(super) use outlines::*;
+pub(super) use ray_cast::ray_cast;
 
-pub(super) const OBSTACLES_TOPIC: &str = "obstacles";
-pub(super) const LIDAR_TOPIC: &str = "lidar";
+/// 障碍物对象
+#[derive(Clone)]
+pub struct Obstacle {
+    pub(super) radius: f32,
+    pub(super) angle: Range<f32>,
+    pub(super) wall: Vec<Point2<f32>>,
+}
 
-#[allow(dead_code)]
-pub(super) const TRICYCLE_OUTLINE: [Point2<f32>; 5] = [
-    point(1.0, 0.0),
-    point(0.0, 0.75),
-    point(-2.0, 0.75),
-    point(-2.0, -0.75),
-    point(0.0, -0.75),
-];
+impl Obstacle {
+    /// 构造障碍物对象
+    pub fn new(wall: &[Point2<f32>], width: f32, radius: f32) -> Option<Self> {
+        let wall = enlarge(wall, width * 0.5);
+        if wall.is_empty() {
+            None
+        } else {
+            let start = wall.first().unwrap();
+            let start = start[1].atan2(start[0]);
+            let end = wall.last().unwrap().coords;
+            let end = end[1].atan2(end[0]);
+            Some(Self {
+                radius,
+                angle: Range {
+                    start,
+                    end: if end >= start { end } else { end + PI * 2.0 },
+                },
+                wall,
+            })
+        }
+    }
 
-#[allow(dead_code)]
-pub(super) const 崎岖轮廓: [Point2<f32>; 12] = [
-    point(0.0, 0.0),
-    point(2.0, -3.0),
-    point(4.0, -2.0),
-    point(2.0, -2.0),
-    point(3.0, -1.2),
-    point(2.0, -0.4),
-    point(4.0, 0.0),
-    point(2.0, 0.4),
-    point(3.0, 1.2),
-    point(2.0, 2.0),
-    point(4.0, 2.0),
-    point(2.0, 3.0),
-];
+    pub fn contains(&self, p: Point2<f32>) -> bool {
+        let mut angle = p[1].atan2(p[0]);
+        if angle < self.angle.start {
+            angle += PI * 2.0;
+        }
+        if angle < self.angle.end {
+            false
+        } else {
+            self.wall
+                .windows(2)
+                .all(|pair| is_left(pair[0], pair[1], p))
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct Polar {
@@ -50,51 +63,6 @@ impl Polar {
         let (sin, cos) = self.theta.sin_cos();
         point(cos * self.rho, sin * self.rho)
     }
-}
-
-/// 生成点云
-pub(super) fn ray_cast(
-    pose: Isometry2<f32>,
-    obstacles: &Vec<Vec<Point2<f32>>>,
-    range: Sector,
-) -> Vec<Polar> {
-    // 转本地多边形障碍物
-    let obstacles = {
-        let x0 = pose.translation.vector[0];
-        let y0 = pose.translation.vector[1];
-        let aabb = AABB::new(point(x0 - 10.0, y0 - 10.0), point(x0 + 10.0, y0 + 10.0));
-        let to_local = pose.inverse();
-        obstacles
-            .iter()
-            .filter(|v| v.iter().any(|p| aabb.contains_local_point(p)))
-            .map(|v| v.iter().map(|p| to_local * p).collect::<Vec<_>>())
-            .collect::<Vec<_>>()
-    };
-    //
-    let mut result = Vec::new();
-    const ORIGIN: Point2<f32> = point(0.0, 0.0);
-    const STEP: f32 = PI / 360.0;
-    let dir_range = range.angle * 0.5;
-    let mut theta = -dir_range;
-    while theta <= dir_range {
-        let (sin, cos) = theta.sin_cos();
-        let ray = Segment(
-            ORIGIN,
-            Point2::<f32> {
-                coords: vector(cos, sin) * range.radius,
-            },
-        );
-        let rho = obstacles
-            .iter()
-            .filter_map(|c| ray.ray_cast(c))
-            .fold(f32::INFINITY, |min, l| f32::min(min, l))
-            + thread_rng().gen_range(-0.01..0.01);
-        if rho.is_normal() {
-            result.push(Polar { rho, theta });
-        }
-        theta += STEP;
-    }
-    result
 }
 
 /// 线段拟合
@@ -244,7 +212,7 @@ pub(super) fn melkman(src: Vec<Point2<f32>>) -> Vec<Point2<f32>> {
 /// 扩张凸多边形
 ///
 /// 视作折线且两个端点将被丢弃
-pub(super) fn enlarge(v: &[Point2<f32>], len: f32) -> Vec<Point2<f32>> {
+fn enlarge(v: &[Point2<f32>], len: f32) -> Vec<Point2<f32>> {
     v.windows(3)
         .flat_map(|triple| {
             let c = triple[1];
@@ -265,7 +233,7 @@ pub(super) fn enlarge(v: &[Point2<f32>], len: f32) -> Vec<Point2<f32>> {
         .collect::<Vec<_>>()
 }
 
-/// 叉积 = 两向量围成平行四边形面积
+/// 叉积 === 两向量围成平行四边形面积
 #[inline]
 fn cross_numeric(v0: Vector2<f32>, v1: Vector2<f32>) -> f32 {
     v0[1] * v1[0] - v0[0] * v1[1]

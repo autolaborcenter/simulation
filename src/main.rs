@@ -9,10 +9,10 @@ use std::{
 };
 
 mod chassis;
-mod obstacles;
+mod obstacle;
 
 use chassis::{rgbd_bounds, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
-use obstacles::{enlarge, fit, melkman, ray_cast, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC};
+use obstacle::{fit, melkman, ray_cast, Obstacle, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC};
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -97,8 +97,14 @@ fn main() {
         let _ = repos.track(PATH_TO_TRACK);
         let mut time = Instant::now();
         loop {
-            // 更新
+            // 更新位姿
             predictor.next().map(|d| odometry += d);
+            // 构造障碍物对象
+            let lidar = ray_cast(odometry.pose, &obstables, rgbd);
+            let obstacles = fit(&lidar, RGBD_METERS * 2.0, 0.6, 0.04)
+                .into_iter()
+                .filter_map(|obj| Obstacle::new(&melkman(obj), 0.6, rgbd.radius))
+                .collect::<Vec<_>>();
             // 循线
             let ref mut target = predictor.predictor.target;
             if let Some((speed, rudder)) = repos.put_pose(&odometry.pose) {
@@ -111,7 +117,6 @@ fn main() {
             let socket = socket.clone();
             let predictor = predictor.clone();
             let rgbd_bounds = rgbd_bounds.clone();
-            let lidar = ray_cast(odometry.pose, &obstables, rgbd);
             task::spawn(async move {
                 let tr = odometry.pose;
                 let packet = Encoder::with(|figure| {
@@ -144,26 +149,22 @@ fn main() {
                                 .map(|p| tr * p.to_point())
                                 .map(|p| vertex!(0; p[0], p[1]; 0)),
                         );
-                        fit(&lidar, RGBD_METERS * 2.0, 0.6, 0.04)
-                            .into_iter()
-                            .map(|obj| enlarge(&melkman(obj), 0.3))
-                            .filter(|v| !v.is_empty())
-                            .for_each(|v| {
-                                let head = tr
-                                    * Point2 {
-                                        coords: v[0].coords.normalize() * rgbd.radius,
-                                    };
-                                let tail = tr
-                                    * Point2 {
-                                        coords: v[v.len() - 1].coords.normalize() * rgbd.radius,
-                                    };
-                                topic.push(vertex!(1; head[0], head[1]; 0));
-                                topic.extend(v.into_iter().map(|p| {
-                                    let p = tr * p;
-                                    vertex!(1; p[0], p[1]; 255)
-                                }));
-                                topic.push(vertex!(1; tail[0], tail[1]; 255));
-                            });
+                        obstacles.iter().map(|o| &o.wall).for_each(|v| {
+                            let head = tr
+                                * Point2 {
+                                    coords: v[0].coords.normalize() * rgbd.radius,
+                                };
+                            let tail = tr
+                                * Point2 {
+                                    coords: v[v.len() - 1].coords.normalize() * rgbd.radius,
+                                };
+                            topic.push(vertex!(1; head[0], head[1]; 0));
+                            topic.extend(v.into_iter().map(|p| {
+                                let p = tr * p;
+                                vertex!(1; p[0], p[1]; 255)
+                            }));
+                            topic.push(vertex!(1; tail[0], tail[1]; 255));
+                        });
                     });
                     // 轨迹预测
                     figure.with_topic(PRE_TOPIC, |mut topic| {
