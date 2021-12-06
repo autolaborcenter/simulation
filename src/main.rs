@@ -1,6 +1,6 @@
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
-use parry2d::na::{Isometry2, Point2, Vector2};
+use parry2d::na::{Isometry2, Point2, UnitComplex, Vector2};
 use path_tracking::{PathFile, PromoteConfig, RelocateConfig, Sector};
 use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor,
@@ -15,7 +15,9 @@ mod obstacle;
 mod path_builder;
 
 use chassis::{rgbd_bounds, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER, SIMPLE_OUTLINE};
-use obstacle::{fit, melkman, ray_cast, Obstacle, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC};
+use obstacle::{
+    convex_from_origin, fit, ray_cast, Obstacle, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC,
+};
 use path_builder::PathBuilder;
 
 macro_rules! vertex_from_pose {
@@ -41,7 +43,7 @@ const PATH_TOPIC: &str = "path";
 const LOCAL_TOPIC: &str = "local";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 0.5; // 倍速仿真
+const FF: f32 = 1.0; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const PERIOD: Duration = Duration::from_millis(40);
@@ -72,11 +74,11 @@ fn main() {
         };
         let obstables = vec![
             {
-                let tr = isometry(-7685.0, -1880.0, 0.0, 0.5);
+                let tr = isometry(-7684.5, -1880.0, 0.0, 0.5);
                 崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
             },
             {
-                let tr = isometry(-7689.0, -1880.0, 0.0, 0.5);
+                let tr = isometry(-7688.5, -1880.0, 0.0, 0.5);
                 崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
             },
         ];
@@ -114,9 +116,12 @@ fn main() {
             predictor.next().map(|d| odometry += d);
             // 构造障碍物对象
             let lidar = ray_cast(odometry.pose, RGBD_ON_CHASSIS, &obstables, rgbd);
-            let obstacles = fit(lidar.clone(), RGBD_METERS * 2.0, 0.6, 0.04)
+            let obstacles = convex_from_origin(lidar.clone(), 0.6)
                 .into_iter()
-                .filter_map(|obj| Obstacle::new(&melkman(obj), 0.6, rgbd.radius))
+                .map(|src| fit(src, RGBD_METERS, 0.04))
+                .clone()
+                .into_iter()
+                .filter_map(|wall| Obstacle::new(&wall, 0.6, rgbd.radius))
                 .collect::<Vec<_>>();
             // 循线
             if let Some(i) = path.promote(PromoteConfig {
@@ -208,24 +213,14 @@ fn main() {
                         topic.extend(
                             lidar
                                 .iter()
-                                .map(|p| tr * p)
+                                .map(|p| tr * p.to_point())
                                 .map(|p| vertex!(0; p[0], p[1]; 0)),
                         );
                         obstacles.iter().map(|o| &o.wall).for_each(|v| {
-                            let head = tr
-                                * Point2 {
-                                    coords: v[0].coords.normalize() * rgbd.radius,
-                                };
-                            let tail = tr
-                                * Point2 {
-                                    coords: v[v.len() - 1].coords.normalize() * rgbd.radius,
-                                };
-                            topic.push(vertex!(1; head[0], head[1]; 0));
-                            topic.extend(v.into_iter().map(|p| {
+                            topic.extend_polyline(v.into_iter().map(|p| {
                                 let p = tr * p;
                                 vertex!(1; p[0], p[1]; 255)
                             }));
-                            topic.push(vertex!(1; tail[0], tail[1]; 255));
                         });
                     });
                     figure.with_topic(LOCAL_TOPIC, |mut topic| {
@@ -265,6 +260,8 @@ fn main() {
                 let _ = socket.send_to(&packet, "127.0.0.1:12345").await;
             });
             // 延时到下一周期
+            // let mut ignored = Default::default();
+            // let _ = async_std::io::stdin().read_line(&mut ignored).await;
             time += PERIOD.div_f32(FF);
             if let Some(dur) = time.checked_duration_since(Instant::now()) {
                 task::sleep(dur).await;
@@ -360,4 +357,10 @@ const fn point(x: f32, y: f32) -> Point2<f32> {
 const fn vector(x: f32, y: f32) -> Vector2<f32> {
     use parry2d::na::{ArrayStorage, OVector};
     OVector::from_array_storage(ArrayStorage([[x, y]]))
+}
+
+#[inline]
+const fn angle(cos: f32, sin: f32) -> UnitComplex<f32> {
+    use parry2d::na::{Complex, Unit};
+    Unit::new_unchecked(Complex { re: cos, im: sin })
 }
