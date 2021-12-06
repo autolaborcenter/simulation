@@ -9,11 +9,11 @@ type Point = Point2<f32>;
 /// 放出射线生成传感器坐标系上的点云
 pub(crate) fn ray_cast(
     robot_on_world: Isometry2<f32>,
-    lidar_on_robot: Isometry2<f32>,
+    sensor_on_robot: Isometry2<f32>,
     obstacles: &Vec<Vec<Point2<f32>>>,
     range: Sector,
 ) -> Vec<Polar> {
-    let pose = robot_on_world * lidar_on_robot;
+    let pose = robot_on_world * sensor_on_robot;
     // 转本地多边形障碍物
     let obstacles = {
         let x0 = pose.translation.vector[0];

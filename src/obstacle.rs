@@ -1,4 +1,4 @@
-﻿use crate::{isometry, point, vector, Point2, Vector2};
+﻿use crate::{isometry, point, vector, Isometry2, Point2, Vector2};
 use std::f32::consts::PI;
 
 mod outlines;
@@ -12,29 +12,40 @@ pub(super) use simplify::*;
 /// 障碍物对象
 #[derive(Clone)]
 pub struct Obstacle {
-    radius: f32,
     angles: Vec<f32>,
     pub(super) wall: Vec<Point2<f32>>,
 }
 
 impl Obstacle {
     /// 构造障碍物对象
-    pub fn new(wall: &[Point2<f32>], width: f32, radius: f32) -> Option<Self> {
+    pub fn new(sensor_on_robot: Isometry2<f32>, wall: &[Point2<f32>], width: f32) -> Option<Self> {
         let wall = enlarge(wall, width * 0.5);
-        if wall.is_empty() {
-            None
-        } else {
-            let mut angles = wall.iter().map(|p| p[1].atan2(p[0])).collect::<Vec<_>>();
-            for i in 1..angles.len() - 1 {
-                if angles[i] <= angles[i - 1] {
-                    angles[i] += PI * 2.0;
+        let mut iter = wall.iter().map(|p| sensor_on_robot * p);
+        if let Some(p) = iter.next() {
+            let mut points = vec![p];
+            let mut angles = vec![p[1].atan2(p[0])];
+            for p in iter {
+                let mut angle = p[1].atan2(p[0]);
+                while let Some(last) = angles.last() {
+                    if angle < last - PI {
+                        angle += 2.0 * PI;
+                        break;
+                    } else if angle < *last {
+                        points.pop();
+                        angles.pop();
+                    } else {
+                        break;
+                    }
                 }
+                points.push(p);
+                angles.push(angle);
             }
             Some(Self {
-                radius,
                 angles,
-                wall,
+                wall: points,
             })
+        } else {
+            None
         }
     }
 

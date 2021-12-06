@@ -121,7 +121,7 @@ fn main() {
                 .map(|src| fit(src, RGBD_METERS, 0.04))
                 .clone()
                 .into_iter()
-                .filter_map(|wall| Obstacle::new(&wall, 0.6, rgbd.radius))
+                .filter_map(|wall| Obstacle::new(RGBD_ON_CHASSIS, &wall, 0.6))
                 .collect::<Vec<_>>();
             // 循线
             if let Some(i) = path.promote(PromoteConfig {
