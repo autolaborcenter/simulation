@@ -1,5 +1,5 @@
 ﻿use crate::{isometry, point, vector, Isometry2, Point2, Vector2};
-use std::f32::consts::PI;
+use parry2d::bounding_volume::AABB;
 
 mod outlines;
 mod ray_cast;
@@ -7,80 +7,40 @@ mod simplify;
 
 pub(super) use outlines::*;
 pub(super) use ray_cast::ray_cast;
+use ray_cast::Segment;
 pub(super) use simplify::*;
 
 /// 障碍物对象
 #[derive(Clone)]
 pub struct Obstacle {
-    angles: Vec<f32>,
-    pub(super) wall: Vec<Point2<f32>>,
+    aabb: AABB,
+    pub vertex: Vec<Point2<f32>>,
 }
 
 impl Obstacle {
     /// 构造障碍物对象
     pub fn new(sensor_on_robot: Isometry2<f32>, wall: &[Point2<f32>], width: f32) -> Option<Self> {
-        let wall = enlarge(wall, width * 0.5);
-        let mut iter = wall.iter().map(|p| sensor_on_robot * p);
-        if let Some(p) = iter.next() {
-            let mut points = vec![p];
-            let mut angles = vec![p[1].atan2(p[0])];
-            for p in iter {
-                let mut angle = p[1].atan2(p[0]);
-                while let Some(last) = angles.last() {
-                    if angle < last - PI {
-                        angle += 2.0 * PI;
-                        break;
-                    } else if angle < *last {
-                        points.pop();
-                        angles.pop();
-                    } else {
-                        break;
-                    }
-                }
-                points.push(p);
-                angles.push(angle);
-            }
+        if wall.is_empty() {
+            None
+        } else {
+            let vertex = enlarge(wall, width * 0.5)
+                .into_iter()
+                .map(|p| sensor_on_robot * p)
+                .collect::<Vec<_>>();
             Some(Self {
-                angles,
-                wall: points,
+                aabb: AABB::from_points(vertex.iter()),
+                vertex,
             })
+        }
+    }
+
+    /// 计算线段与障碍物交点
+    pub fn intersection(&self, p0: Point2<f32>, p1: Point2<f32>) -> Option<(usize, f32)> {
+        // p1 在内部
+        if self.aabb.contains_local_point(&p1) {
+            Segment(p0, p1).intersection_with_polygon(&self.vertex)
         } else {
             None
-        }
-    }
-
-    /// 判断点是否在障碍物中
-    pub fn contains(&self, p: Point2<f32>) -> bool {
-        let mut angle = p[1].atan2(p[0]);
-        if angle < self.angles[0] {
-            angle += PI * 2.0;
-        }
-        match self.angles.binary_search_by(|r| {
-            use std::cmp::Ordering::*;
-            if *r < angle {
-                Less
-            } else if *r > angle {
-                Greater
-            } else {
-                Equal
-            }
-        }) {
-            Ok(i) => p.coords.norm_squared() > self.wall[i].coords.norm_squared(),
-            Err(i) => i != 0 && i != self.wall.len() && !is_left(self.wall[i - 1], self.wall[i], p),
-        }
-    }
-
-    /// 找一个较近的边
-    pub fn closer_edge(&self) -> f32 {
-        let a = self.angles[0];
-        let mut b = *self.angles.last().unwrap();
-        if b > PI {
-            b -= PI * 2.0;
-        }
-        if a.abs() < b.abs() {
-            a
-        } else {
-            b
         }
     }
 }

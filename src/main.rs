@@ -43,7 +43,7 @@ const PATH_TOPIC: &str = "path";
 const LOCAL_TOPIC: &str = "local";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 1.0; // 倍速仿真
+const FF: f32 = 0.2; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const PERIOD: Duration = Duration::from_millis(40);
@@ -119,8 +119,6 @@ fn main() {
             let obstacles = convex_from_origin(lidar.clone(), 0.6)
                 .into_iter()
                 .map(|src| fit(src, RGBD_METERS, 0.04))
-                .clone()
-                .into_iter()
                 .filter_map(|wall| Obstacle::new(RGBD_ON_CHASSIS, &wall, 0.6))
                 .collect::<Vec<_>>();
             // 循线
@@ -133,41 +131,26 @@ fn main() {
             }
             // 计算局部路径
             let local = {
-                let checker = rgbd.get_checker();
                 let to_local = odometry.pose.inverse();
-                let mut local = path
-                    .slice(index)
-                    .iter()
-                    .map(|p| to_local * p)
-                    .take_while(|p| checker.contains_pose(*p));
+                let mut local = path.slice(index).iter().map(|p| to_local * p);
                 let mut modified = Vec::new();
+                let mut p0 = Point2 {
+                    coords: local.next().unwrap().translation.vector,
+                };
                 while let Some(pose) = local.next() {
-                    let p = Point2 {
+                    let p1 = Point2 {
                         coords: pose.translation.vector,
                     };
-                    if let Some(o) = obstacles.iter().find(|o| o.contains(p)) {
-                        let target = loop {
-                            if let Some(pose) = local.next() {
-                                // 离开障碍
-                                if !o.contains(Point2 {
-                                    coords: pose.translation.vector,
-                                }) {
-                                    break pose;
-                                }
-                            } else {
-                                // 离开视野
-                                let (sin, cos) = o.closer_edge().sin_cos();
-                                break isometry(cos * rgbd.radius, sin * rgbd.radius, cos, sin);
-                            }
-                        };
-                        modified.clear();
-                        modified.extend(PathBuilder::from(target));
+                    if let Some((o, (i, k))) = obstacles
+                        .iter()
+                        .find_map(|o| o.intersection(p0, p1).map(|pair| (o, pair)))
+                    {
                         break;
                     } else {
                         modified.push(pose);
                     }
                 }
-                modified.extend(local);
+                // modified.extend(local);
                 modified
             };
             predictor.predictor.target = if !local.is_empty() {
@@ -208,16 +191,18 @@ fn main() {
                         topic.push(transform(&tr, vertex!(0; 0.4, 0.0; Circle, 0.4; 0)));
                     });
                     figure.with_topic(LIDAR_TOPIC, |mut topic| {
-                        let tr = tr * RGBD_ON_CHASSIS;
                         topic.clear();
-                        topic.extend(
-                            lidar
-                                .iter()
-                                .map(|p| tr * p.to_point())
-                                .map(|p| vertex!(0; p[0], p[1]; 0)),
-                        );
-                        obstacles.iter().map(|o| &o.wall).for_each(|v| {
-                            topic.extend_polyline(v.into_iter().map(|p| {
+                        {
+                            let tr = tr * RGBD_ON_CHASSIS;
+                            topic.extend(
+                                lidar
+                                    .iter()
+                                    .map(|p| tr * p.to_point())
+                                    .map(|p| vertex!(0; p[0], p[1]; 0)),
+                            );
+                        }
+                        obstacles.iter().map(|o| &o.vertex).for_each(|v| {
+                            topic.extend_polygon(v.into_iter().map(|p| {
                                 let p = tr * p;
                                 vertex!(1; p[0], p[1]; 255)
                             }));
@@ -260,8 +245,8 @@ fn main() {
                 let _ = socket.send_to(&packet, "127.0.0.1:12345").await;
             });
             // 延时到下一周期
-            // let mut ignored = Default::default();
-            // let _ = async_std::io::stdin().read_line(&mut ignored).await;
+            let mut ignored = Default::default();
+            let _ = async_std::io::stdin().read_line(&mut ignored).await;
             time += PERIOD.div_f32(FF);
             if let Some(dur) = time.checked_duration_since(Instant::now()) {
                 task::sleep(dur).await;
