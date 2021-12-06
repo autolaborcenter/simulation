@@ -43,6 +43,49 @@ impl Obstacle {
             None
         }
     }
+
+    /// 计算线段与障碍物交点
+    pub fn go_through(
+        &self,
+        mut p0: Point2<f32>,
+        path: &mut impl Iterator<Item = Point2<f32>>,
+    ) -> Vec<Point2<f32>> {
+        // 计算方向上下界
+        let any = self.vertex[0];
+        let mut right = (any[1].atan2(any[0]), 0);
+        let mut left = right;
+        for (i, p) in self.vertex.iter().enumerate().skip(1) {
+            let angle = p[1].atan2(p[0]);
+            if angle < right.0 {
+                right = (angle, i);
+            } else if angle > left.0 {
+                left = (angle, i);
+            }
+        }
+        // 找到离开位置
+        while let Some(p1) = path.next() {
+            if let Some((j, k)) = Segment(p0, p1).intersection_with_polygon(&self.vertex) {
+                if Segment(point(0.0, 0.0), p1)
+                    .intersection_with_polygon(&self.vertex)
+                    .is_none()
+                {
+                    return vec![p1];
+                } else {
+                    let i = if j == 0 { self.vertex.len() - 1 } else { j - 1 };
+                    let l = (self.vertex[i] - self.vertex[j]).norm();
+                    if i < left.1 {}
+                    panic!();
+                }
+            } else {
+                p0 = p1;
+            }
+        }
+        if right.0.abs() < left.0.abs() {
+            vec![self.vertex[right.1]]
+        } else {
+            vec![self.vertex[left.1]]
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

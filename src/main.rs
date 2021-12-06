@@ -137,20 +137,21 @@ fn main() {
                 let mut p0 = Point2 {
                     coords: local.next().unwrap().translation.vector,
                 };
-                while let Some(pose) = local.next() {
+                while let Some(p) = local.next() {
                     let p1 = Point2 {
-                        coords: pose.translation.vector,
+                        coords: p.translation.vector,
                     };
-                    if let Some((o, (i, k))) = obstacles
-                        .iter()
-                        .find_map(|o| o.intersection(p0, p1).map(|pair| (o, pair)))
-                    {
+                    if let Some(o) = obstacles.iter().find(|o| o.intersection(p0, p1).is_some()) {
+                        let mut clone = local.map(|x| Point2 {
+                            coords: x.translation.vector,
+                        });
+                        o.go_through(p1, &mut clone);
                         break;
                     } else {
-                        modified.push(pose);
+                        modified.push(p);
+                        p0 = p1;
                     }
                 }
-                // modified.extend(local);
                 modified
             };
             predictor.predictor.target = if !local.is_empty() {
