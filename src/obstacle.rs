@@ -5,25 +5,31 @@ mod outlines;
 mod ray_cast;
 mod simplify;
 
+use ray_cast::Segment;
+
 pub(super) use outlines::*;
 pub(super) use ray_cast::ray_cast;
-use ray_cast::Segment;
 pub(super) use simplify::*;
 
 /// 障碍物对象
 #[derive(Clone)]
 pub struct Obstacle {
     aabb: AABB,
-    pub vertex: Vec<Point2<f32>>,
+    pub vertex: Vec<Point2<f32>>, // 顺时针排列的顶点
 }
 
 impl Obstacle {
     /// 构造障碍物对象
-    pub fn new(sensor_on_robot: Isometry2<f32>, wall: &[Point2<f32>], width: f32) -> Option<Self> {
+    pub fn new(
+        sensor_on_robot: Isometry2<f32>,
+        wall: &[Point2<f32>],
+        radius: f32,
+        width: f32,
+    ) -> Option<Self> {
         if wall.is_empty() {
             None
         } else {
-            let vertex = enlarge(wall, width * 0.5)
+            let vertex = enlarge(wall, radius, width * 0.5)
                 .into_iter()
                 .map(|p| sensor_on_robot * p)
                 .collect::<Vec<_>>();
@@ -34,13 +40,14 @@ impl Obstacle {
         }
     }
 
-    /// 计算线段与障碍物交点
-    pub fn intersection(&self, p0: Point2<f32>, p1: Point2<f32>) -> Option<(usize, f32)> {
-        // p1 在内部
-        if self.aabb.contains_local_point(&p1) {
-            Segment(p0, p1).intersection_with_polygon(&self.vertex)
-        } else {
-            None
+    pub fn contains(&self, p: Point2<f32>) -> bool {
+        self.aabb.contains_local_point(&p) && {
+            let mut p0 = self.vertex[self.vertex.len() - 1];
+            self.vertex.iter().all(|p1| {
+                let result = !is_left(p0, *p1, p);
+                p0 = *p1;
+                result
+            })
         }
     }
 
@@ -71,23 +78,25 @@ impl Obstacle {
                 {
                     return vec![p1];
                 } else {
-                    let i = if j == 0 { self.vertex.len() - 1 } else { j - 1 };
-                    let l = (self.vertex[i] - self.vertex[j]).norm();
+                    let mut i = if j == 0 { self.vertex.len() - 1 } else { j - 1 };
+                    let mut j = j;
+
+                    let seg = self.vertex[j] - self.vertex[i];
+                    let l = seg.norm();
                     let ll = self.sum_length(left.1, i) + l * k;
-                    let lr = self.sum_length(j, right.1) + l * (1.0 - k);
-                    let mut result = Vec::new();
+                    let lr = l * (1.0 - k) + self.sum_length(j, right.1);
+
+                    let mut result = vec![self.vertex[i] + seg * k];
                     if ll < lr {
-                        let mut k = left.1;
-                        while k != i {
-                            result.push(self.vertex[k]);
-                            k = (k + 1) % self.vertex.len();
+                        while i != left.1 {
+                            result.push(self.vertex[i]);
+                            i = if i == 0 { self.vertex.len() - 1 } else { i - 1 };
                         }
                         result.push(self.vertex[i]);
                     } else {
-                        let mut k = right.1;
-                        while k != j {
-                            result.push(self.vertex[k]);
-                            k = if k == 0 { self.vertex.len() - 1 } else { k - 1 };
+                        while j != right.1 {
+                            result.push(self.vertex[j]);
+                            j = if j == self.vertex.len() - 1 { 0 } else { j + 1 };
                         }
                         result.push(self.vertex[j]);
                     }
@@ -149,8 +158,7 @@ impl Polar {
 }
 
 /// 扩张凸折线
-fn enlarge(v: &[Point2<f32>], len: f32) -> Vec<Point2<f32>> {
-    let radius = v[0].coords.norm();
+fn enlarge(v: &[Point2<f32>], radius: f32, len: f32) -> Vec<Point2<f32>> {
     // 占个位置
     let mut result = vec![point(0.0, 0.0)];
     // 扩张顶点
@@ -160,7 +168,7 @@ fn enlarge(v: &[Point2<f32>], len: f32) -> Vec<Point2<f32>> {
         let d1 = (triple[2] - c).normalize();
         let cross = cross_numeric(d0, d1);
         // 锐角切成直角
-        if cross.is_sign_negative() && d0.dot(&d1).is_sign_positive() {
+        if cross <= 0.0 && d0.dot(&d1).is_sign_positive() {
             /// 法向量
             #[inline]
             fn normal(v: Vector2<f32>) -> Vector2<f32> {
@@ -200,7 +208,7 @@ fn is_left(a: Point2<f32>, b: Point2<f32>, c: Point2<f32>) -> bool {
 
 #[test]
 fn test_is_left() {
-    const A: Point2<f32> = point(2.3799877, -1.7332762);
+    const A: Point2<f32> = point(0.0, 0.0);
     const B: Point2<f32> = point(1.0, 0.0);
     const C: Point2<f32> = point(2.0, 1.0);
     const D: Point2<f32> = point(2.0, -1.0);

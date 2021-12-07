@@ -49,11 +49,11 @@ pub(crate) fn convex_from_origin(
 }
 
 /// 线段拟合，并添加两个端点
-pub(crate) fn fit(src: Vec<Point2<f32>>, radius: f32, max_len: f32) -> Vec<Point2<f32>> {
+pub(crate) fn fit(src: Vec<Point2<f32>>, max_len: f32) -> Vec<Point2<f32>> {
     let mut source = src.into_iter();
     let mut result = {
         let next = source.next().unwrap();
-        vec![Polar::reset_radius_of_point(next, radius), next]
+        vec![Polar::reset_radius_of_point(next, 1e3), next]
     };
     let mut buf = vec![];
     for p in source {
@@ -97,7 +97,7 @@ pub(crate) fn fit(src: Vec<Point2<f32>>, radius: f32, max_len: f32) -> Vec<Point
         result.push(p);
     }
     let last = *result.last().unwrap();
-    result.push(Polar::reset_radius_of_point(last, radius));
+    result.push(Polar::reset_radius_of_point(last, 1e3));
     result
 }
 

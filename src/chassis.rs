@@ -25,6 +25,10 @@ pub(super) fn random_rudder(rudder: &mut f32) {
     *rudder = (*rudder + delta).clamp(-FRAC_PI_2, FRAC_PI_2);
 }
 
+/// 机器人外轮廓
+///
+/// 基于这个轮廓计算甩尾的最小转弯半径 =>
+/// `(r+0.26)^2 + 0.1^2 >= (r+0.12)^2 + 0.47^2` <=> `r>=0.5632`
 pub(super) const ROBOT_OUTLINE: [Vertex; 17] = [
     vertex!(0; 0.25, 0.08; 0),
     vertex!(0; 0.12, 0.14; 64),
@@ -58,17 +62,7 @@ pub(super) const RUDDER: [Vertex; 5] = [
     vertex!(1; -0.075, 0.06; 64),
 ];
 
-pub(super) const SIMPLE_OUTLINE: [Vertex; 6] = [
-    vertex!(2; 0.32, 0.0; 0),
-    vertex!(2; 0.10, 0.26; 64),
-    vertex!(2; -0.47, 0.26; 64),
-    vertex!(2; -0.47, -0.26; 64),
-    vertex!(2; 0.10, -0.26; 64),
-    //
-    vertex!(2; 0.32, 0.0; 64),
-];
-
-pub(super) fn rgbd_bounds(
+pub(super) fn sector_vertex(
     rgbd_on_chassis: Isometry2<f32>,
     radius: f32,
     degrees: f32,
