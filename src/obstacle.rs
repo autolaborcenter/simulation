@@ -73,8 +73,25 @@ impl Obstacle {
                 } else {
                     let i = if j == 0 { self.vertex.len() - 1 } else { j - 1 };
                     let l = (self.vertex[i] - self.vertex[j]).norm();
-                    if i < left.1 {}
-                    panic!();
+                    let ll = self.sum_length(left.1, i) + l * k;
+                    let lr = self.sum_length(j, right.1) + l * (1.0 - k);
+                    let mut result = Vec::new();
+                    if ll < lr {
+                        let mut k = left.1;
+                        while k != i {
+                            result.push(self.vertex[k]);
+                            k = (k + 1) % self.vertex.len();
+                        }
+                        result.push(self.vertex[i]);
+                    } else {
+                        let mut k = right.1;
+                        while k != j {
+                            result.push(self.vertex[k]);
+                            k = if k == 0 { self.vertex.len() - 1 } else { k - 1 };
+                        }
+                        result.push(self.vertex[j]);
+                    }
+                    return result;
                 }
             } else {
                 p0 = p1;
@@ -85,6 +102,16 @@ impl Obstacle {
         } else {
             vec![self.vertex[left.1]]
         }
+    }
+
+    fn sum_length(&self, mut begin: usize, end: usize) -> f32 {
+        let mut sum = 0.0;
+        while begin != end {
+            let next = (begin + 1) % self.vertex.len();
+            sum += (self.vertex[begin] - self.vertex[next]).norm();
+            begin = next;
+        }
+        sum
     }
 }
 

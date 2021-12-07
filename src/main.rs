@@ -18,7 +18,6 @@ use chassis::{rgbd_bounds, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER,
 use obstacle::{
     convex_from_origin, fit, ray_cast, Obstacle, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC,
 };
-use path_builder::PathBuilder;
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -43,7 +42,7 @@ const PATH_TOPIC: &str = "path";
 const LOCAL_TOPIC: &str = "local";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 0.2; // 倍速仿真
+const FF: f32 = 1.0; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const PERIOD: Duration = Duration::from_millis(40);
@@ -58,7 +57,7 @@ fn main() {
         let mut odometry = Odometry {
             s: 0.0,
             a: 0.0,
-            pose: pose!(-7686.0, -1875.5; -FRAC_PI_2),
+            pose: pose!(-7686.5, -1872.0; -FRAC_PI_2),
         };
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
@@ -145,7 +144,9 @@ fn main() {
                         let mut clone = local.map(|x| Point2 {
                             coords: x.translation.vector,
                         });
-                        o.go_through(p1, &mut clone);
+                        modified.clear();
+                        modified
+                            .extend(path_builder::PathBuilder::new(o.go_through(p1, &mut clone)));
                         break;
                     } else {
                         modified.push(p);
@@ -158,7 +159,11 @@ fn main() {
                 if let Some(rudder) = path_tracking::track::track(&local, 0.4) {
                     Physical { speed: 0.4, rudder }
                 } else {
-                    Physical::RELEASED
+                    let (speed, rudder) = path_tracking::track::goto(local[0], 0.4);
+                    Physical {
+                        speed: speed * 0.4,
+                        rudder,
+                    }
                 }
             } else {
                 Physical::RELEASED
@@ -246,8 +251,8 @@ fn main() {
                 let _ = socket.send_to(&packet, "127.0.0.1:12345").await;
             });
             // 延时到下一周期
-            let mut ignored = Default::default();
-            let _ = async_std::io::stdin().read_line(&mut ignored).await;
+            // let mut ignored = Default::default();
+            // let _ = async_std::io::stdin().read_line(&mut ignored).await;
             time += PERIOD.div_f32(FF);
             if let Some(dur) = time.checked_duration_since(Instant::now()) {
                 task::sleep(dur).await;
