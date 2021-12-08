@@ -1,7 +1,7 @@
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
-use parry2d::na::{Isometry2, Point2, UnitComplex, Vector2};
-use path_tracking::{PathFile, PromoteConfig, RelocateConfig, Sector};
+use parry2d::na::{Isometry2, Point2, Vector2};
+use path_tracking::{PathFile, Sector};
 use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor,
 };
@@ -9,15 +9,7 @@ use std::{
     f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_8, PI},
     time::{Duration, Instant},
 };
-
-mod chassis;
-mod obstacle;
-mod path_builder;
-
-use chassis::{sector_vertex, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
-use obstacle::{
-    convex_from_origin, fit, ray_cast, Obstacle, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC,
-};
+use track::Parameters;
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -30,11 +22,34 @@ macro_rules! vertex_from_pose {
 }
 
 macro_rules! pose {
+    ($x:expr, $y:expr) => {
+        pm1_control_model::isometry($x as f32, $y as f32, 1.0, 0.0)
+    };
     ($x:expr, $y:expr; $theta:expr) => {{
         let (sin, cos) = ($theta as f32).sin_cos();
-        pm1_control_model::isometry($x, $y, cos, sin)
+        pm1_control_model::isometry($x as f32, $y as f32, cos, sin)
     }};
 }
+
+macro_rules! point {
+    ($p:expr) => {
+        crate::Point2 { coords: $p }
+    };
+    ($x:expr, $y:expr) => {
+        crate::Point2 {
+            coords: crate::vector($x as f32, $y as f32),
+        }
+    };
+}
+
+mod chassis;
+mod obstacle;
+mod track;
+
+use chassis::{sector_vertex, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
+use obstacle::{
+    convex_from_origin, fit, ray_cast, Obstacle, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC,
+};
 
 const FOCUS_TOPIC: &str = "focus";
 const LIGHT_TOPIC: &str = "light";
@@ -42,11 +57,11 @@ const PATH_TOPIC: &str = "path";
 const LOCAL_TOPIC: &str = "local";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 0.5; // 倍速仿真
+const FF: f32 = 1.0; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const PERIOD: Duration = Duration::from_millis(40);
-const RGBD_ON_CHASSIS: Isometry2<f32> = isometry(-0.25, 0.0, 1.0, 0.0);
+const RGBD_ON_CHASSIS: Isometry2<f32> = pose!(-0.25, 0);
 const RGBD_METERS: f32 = 4.0;
 const RGBD_DEGREES: f32 = 85.0;
 const TRACK_SPEED: f32 = 0.6;
@@ -102,16 +117,15 @@ fn main() {
             obstables.clone(),
         );
         // 循线仿真
-        let mut goto = true;
-        let mut index = path
-            .relocate(RelocateConfig {
-                pose: odometry.pose,
-                index: (0, 0),
-                light_radius: 0.4,
+        let mut tracker = track::Tracker::new(
+            &path,
+            Parameters {
                 search_range: rgbd,
-                r#loop: true,
-            })
-            .unwrap();
+                light_radius: 0.4,
+                auto_reinitialize: true,
+                r#loop: false,
+            },
+        );
         let mut time = Instant::now();
         loop {
             // 更新位姿
@@ -120,68 +134,61 @@ fn main() {
             let lidar = ray_cast(odometry.pose, RGBD_ON_CHASSIS, &obstables, rgbd);
             let obstacles = convex_from_origin(lidar.clone(), 0.8)
                 .into_iter()
-                .map(|src| fit(src, 0.04))
-                .filter_map(|wall| Obstacle::new(RGBD_ON_CHASSIS, &wall, rgbd.radius, 0.8))
+                .map(|src| fit(src, rgbd.radius + 0.5, 0.04))
+                .filter_map(|wall| Obstacle::new(RGBD_ON_CHASSIS, &wall, 0.8))
                 .collect::<Vec<_>>();
-            // 循线
-            if let Some(i) = path.promote(PromoteConfig {
-                pose: odometry.pose,
-                index,
-                search_range: rgbd,
-            }) {
-                index.1 = i;
-            }
-            // 计算局部路径
-            let local = {
-                let checker = rgbd.get_checker();
-                let to_local = odometry.pose.inverse();
-                let mut local = path.slice(index).iter().map(|p| to_local * p);
-                let mut modified = Vec::new();
 
-                while let Some(pose) = local.next() {
-                    let point = Point2 {
-                        coords: pose.translation.vector,
-                    };
-                    if let Some(o) = obstacles.iter().find(|o| o.contains(point)) {
-                        let mut clone = local.map(|x| Point2 {
-                            coords: x.translation.vector,
-                        });
-                        modified.clear();
-                        modified.extend(path_builder::PathBuilder::new(
-                            o.go_through(point, &mut clone),
-                            0.4,
-                        ));
-                        break;
-                    } else if modified.is_empty() || checker.contains_pose(pose) {
-                        modified.push(pose);
-                    } else {
-                        break;
-                    }
-                }
-                modified
-            };
-            predictor.predictor.target = if !local.is_empty() {
+            predictor.predictor.target = if let Ok((k, rudder)) = tracker.track(odometry.pose) {
+                let next = Physical {
+                    speed: TRACK_SPEED * k,
+                    rudder,
+                };
+                // 循线
+                let rgbd_checker = rgbd.get_checker();
+                let to_local = odometry.pose.inverse();
+                let mut checker = tracker.clone();
+                let mut time = Duration::ZERO;
+                let mut odom = odometry.clone();
+                let mut predictor = predictor.clone();
                 loop {
-                    if goto {
-                        if let Some((speed, rudder)) = path_tracking::track::goto(local[0], 0.4) {
-                            println!("goto");
-                            break Physical {
-                                speed: speed * TRACK_SPEED,
-                                rudder,
-                            };
-                        } else {
-                            goto = false;
+                    // 更新时间，10s 未碰撞则不再采样
+                    time += predictor.period;
+                    if time > Duration::from_secs(10) {
+                        break next;
+                    }
+                    // 仿真，停止仍未碰撞则不再采样
+                    predictor.predictor.target = match checker.track(odom.pose) {
+                        Ok((k, rudder)) => Physical {
+                            speed: TRACK_SPEED * k,
+                            rudder,
+                        },
+                        Err(_) => break next,
+                    };
+                    // 更新位姿，离开传感器视野仍未碰撞则不再采样
+                    predictor.next().map(|d| odom += d);
+                    let point = to_local * point!(odom.pose.translation.vector);
+                    if !rgbd_checker.contains(RGBD_ON_CHASSIS.inverse_transform_point(&point)) {
+                        break next;
+                    }
+                    // 测试
+                    if let Some(o) = obstacles.iter().find(|o| o.contains(point)) {
+                        let mut part = checker
+                            .path
+                            .slice(checker.index)
+                            .iter()
+                            .map(|p| to_local * point!(p.translation.vector))
+                            .enumerate();
+                        let temp = o.go_through(point, &mut part);
+                        tracker.index.1 = checker.index.1;
+                        if let Some((i, _)) = part.next() {
+                            tracker.index.1 += i - 1;
                         }
-                    } else {
-                        if let Some(rudder) = path_tracking::track::track(&local, 0.4) {
-                            println!("track");
-                            break Physical {
-                                speed: TRACK_SPEED,
-                                rudder,
-                            };
-                        } else {
-                            goto = true;
-                        }
+                        let next = temp.last().unwrap();
+                        let diff = next[1].atan2(next[0] - 0.4) - PI; // [-2π, 2π]
+                        break Physical {
+                            speed: TRACK_SPEED,
+                            rudder: (diff.signum() * PI - diff) / 2.0,
+                        };
                     }
                 }
             } else {
@@ -235,12 +242,12 @@ fn main() {
                     });
                     figure.with_topic(LOCAL_TOPIC, |mut topic| {
                         topic.clear();
-                        topic.extend(
-                            local
-                                .iter()
-                                .map(|p| tr * p)
-                                .map(|p| vertex_from_pose!(0; p; 0)),
-                        );
+                        // topic.extend(
+                        //     local
+                        //         .iter()
+                        //         .map(|p| tr * p)
+                        //         .map(|p| vertex_from_pose!(0; p; 0)),
+                        // );
                         topic.extend(local_bounds.iter().map(|v| transform(&tr, *v)));
                     });
                     // 轨迹预测
@@ -271,8 +278,8 @@ fn main() {
                 let _ = socket.send_to(&packet, "127.0.0.1:12345").await;
             });
             // 延时到下一周期
-            let mut ignored = Default::default();
-            let _ = async_std::io::stdin().read_line(&mut ignored).await;
+            // let mut ignored = Default::default();
+            // let _ = async_std::io::stdin().read_line(&mut ignored).await;
             time += PERIOD.div_f32(FF);
             if let Some(dur) = time.checked_duration_since(Instant::now()) {
                 task::sleep(dur).await;
@@ -282,7 +289,7 @@ fn main() {
 }
 
 fn transform(tr: &Isometry2<f32>, mut vertex: Vertex) -> Vertex {
-    let p = tr * point(vertex.x, vertex.y);
+    let p = tr * point!(vertex.x, vertex.y);
     vertex.x = p[0];
     vertex.y = p[1];
     if vertex.shape == Shape::Arrow && vertex.extra.is_finite() {
@@ -364,20 +371,13 @@ fn send_config(
 }
 
 #[inline]
-const fn point(x: f32, y: f32) -> Point2<f32> {
-    Point2 {
-        coords: vector(x, y),
-    }
-}
-
-#[inline]
 const fn vector(x: f32, y: f32) -> Vector2<f32> {
     use parry2d::na::{ArrayStorage, OVector};
     OVector::from_array_storage(ArrayStorage([[x, y]]))
 }
 
-#[inline]
-const fn angle(cos: f32, sin: f32) -> UnitComplex<f32> {
-    use parry2d::na::{Complex, Unit};
-    Unit::new_unchecked(Complex { re: cos, im: sin })
-}
+// #[inline]
+// const fn angle(cos: f32, sin: f32) -> UnitComplex<f32> {
+//     use parry2d::na::{Complex, Unit};
+//     Unit::new_unchecked(Complex { re: cos, im: sin })
+// }

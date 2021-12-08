@@ -1,4 +1,4 @@
-﻿use crate::{isometry, point, vector, Isometry2, Point2, Vector2};
+﻿use crate::{isometry, vector, Isometry2, Point2, Vector2};
 use parry2d::bounding_volume::AABB;
 
 mod outlines;
@@ -20,16 +20,11 @@ pub struct Obstacle {
 
 impl Obstacle {
     /// 构造障碍物对象
-    pub fn new(
-        sensor_on_robot: Isometry2<f32>,
-        wall: &[Point2<f32>],
-        radius: f32,
-        width: f32,
-    ) -> Option<Self> {
+    pub fn new(sensor_on_robot: Isometry2<f32>, wall: &[Point2<f32>], width: f32) -> Option<Self> {
         if wall.is_empty() {
             None
         } else {
-            let vertex = enlarge(wall, radius, width * 0.5)
+            let vertex = enlarge(wall, width * 0.5)
                 .into_iter()
                 .map(|p| sensor_on_robot * p)
                 .collect::<Vec<_>>();
@@ -51,11 +46,11 @@ impl Obstacle {
         }
     }
 
-    /// 计算线段与障碍物交点
+    /// 计算线段与障碍物交点，返回可能绕过障碍物的倒序的一列点
     pub fn go_through(
         &self,
         mut p0: Point2<f32>,
-        path: &mut impl Iterator<Item = Point2<f32>>,
+        path: &mut impl Iterator<Item = (usize, Point2<f32>)>,
     ) -> Vec<Point2<f32>> {
         // 计算方向上下界
         let any = self.vertex[0];
@@ -70,9 +65,9 @@ impl Obstacle {
             }
         }
         // 找到离开位置
-        while let Some(p1) = path.next() {
+        while let Some((_, p1)) = path.next() {
             if let Some((j, k)) = Segment(p0, p1).intersection_with_polygon(&self.vertex) {
-                if Segment(point(0.0, 0.0), p1)
+                if Segment(point!(0, 0), p1)
                     .intersection_with_polygon(&self.vertex)
                     .is_none()
                 {
@@ -144,7 +139,7 @@ impl Polar {
     #[inline]
     pub fn to_point(&self) -> Point2<f32> {
         let (sin, cos) = self.theta.sin_cos();
-        point(cos * self.rho, sin * self.rho)
+        point!(cos * self.rho, sin * self.rho)
     }
 
     #[inline]
@@ -158,9 +153,15 @@ impl Polar {
 }
 
 /// 扩张凸折线
-fn enlarge(v: &[Point2<f32>], radius: f32, len: f32) -> Vec<Point2<f32>> {
+fn enlarge(v: &[Point2<f32>], len: f32) -> Vec<Point2<f32>> {
+    /// 法向量
+    #[inline]
+    fn normal(v: Vector2<f32>) -> Vector2<f32> {
+        vector(-v[1], v[0])
+    }
+
     // 占个位置
-    let mut result = vec![point(0.0, 0.0)];
+    let mut result = vec![v[0] + len * normal((v[1] - v[0]).normalize())];
     // 扩张顶点
     result.extend(v.windows(3).flat_map(|triple| {
         let c = triple[1];
@@ -169,12 +170,6 @@ fn enlarge(v: &[Point2<f32>], radius: f32, len: f32) -> Vec<Point2<f32>> {
         let cross = cross_numeric(d0, d1);
         // 锐角切成直角
         if cross <= 0.0 && d0.dot(&d1).is_sign_positive() {
-            /// 法向量
-            #[inline]
-            fn normal(v: Vector2<f32>) -> Vector2<f32> {
-                vector(-v[1], v[0])
-            }
-
             vec![
                 c - len * normal(d0),
                 c - len * (d0 + d1).normalize(),
@@ -184,13 +179,7 @@ fn enlarge(v: &[Point2<f32>], radius: f32, len: f32) -> Vec<Point2<f32>> {
             vec![c + (d0 + d1) * len / cross]
         }
     }));
-    // 投影第一个点
-    let p = result[1];
-    result[0] = Polar::reset_radius_of_point(p, radius);
-    // 投影最后一个点
-    let p = *result.last().unwrap();
-    result.push(Polar::reset_radius_of_point(p, radius));
-
+    result.push(v[v.len() - 1] - len * normal((v[v.len() - 2] - v[v.len() - 1]).normalize()));
     result
 }
 
@@ -208,10 +197,10 @@ fn is_left(a: Point2<f32>, b: Point2<f32>, c: Point2<f32>) -> bool {
 
 #[test]
 fn test_is_left() {
-    const A: Point2<f32> = point(0.0, 0.0);
-    const B: Point2<f32> = point(1.0, 0.0);
-    const C: Point2<f32> = point(2.0, 1.0);
-    const D: Point2<f32> = point(2.0, -1.0);
+    const A: Point2<f32> = point!(0, 0);
+    const B: Point2<f32> = point!(1, 0);
+    const C: Point2<f32> = point!(2, 1);
+    const D: Point2<f32> = point!(2, -1);
     assert!(is_left(A, B, C));
     assert!(!is_left(A, B, D));
 }

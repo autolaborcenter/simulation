@@ -1,5 +1,5 @@
 ﻿use super::{cross_numeric, Polar};
-use crate::{point, vector, Isometry2, Point2, Sector};
+use crate::{vector, Isometry2, Point2, Sector};
 use parry2d::bounding_volume::AABB;
 use rand::{thread_rng, Rng};
 use std::f32::consts::PI;
@@ -15,20 +15,24 @@ pub(crate) fn ray_cast(
 ) -> Vec<Polar> {
     let pose = robot_on_world * sensor_on_robot;
     // 转本地多边形障碍物
-    let obstacles = {
-        let x0 = pose.translation.vector[0];
-        let y0 = pose.translation.vector[1];
-        let aabb = AABB::new(point(x0 - 10.0, y0 - 10.0), point(x0 + 10.0, y0 + 10.0));
+    // 关于机器人做 20×20 的方形区域，只考虑至少一个点在区域内的障碍物
+    let obstacles: Vec<Vec<Point>> = {
+        let half_diagonal = vector(10.0, 10.0);
+        let center = pose.translation.vector;
+        let aabb = AABB::new(
+            point!(center - half_diagonal),
+            point!(center + half_diagonal),
+        );
         let to_local = pose.inverse();
         obstacles
             .iter()
             .filter(|v| v.iter().any(|p| aabb.contains_local_point(p)))
-            .map(|v| v.iter().map(|p| to_local * p).collect::<Vec<_>>())
-            .collect::<Vec<_>>()
+            .map(|v| v.iter().map(|p| to_local * p).collect())
+            .collect()
     };
     //
     let mut result = Vec::new();
-    const ORIGIN: Point2<f32> = point(0.0, 0.0);
+    const ORIGIN: Point2<f32> = point!(0, 0);
     const STEP: f32 = PI / 360.0;
     let dir_range = range.angle * 0.5;
     let mut theta = -dir_range;
@@ -118,8 +122,7 @@ impl Segment {
 
 #[test]
 fn test_intersection() {
-    use crate::point;
-    const S0: Segment = Segment(point(0.0, 0.0), point(1.0, 0.0));
-    const S1: Segment = Segment(point(0.0, -1.0), point(1.0, 1.0));
+    const S0: Segment = Segment(point!(0.0, 0.0), point!(1.0, 0.0));
+    const S1: Segment = Segment(point!(0.0, -1.0), point!(1.0, 1.0));
     assert_eq!(Some(0.5), S0.intersection(&S1));
 }
