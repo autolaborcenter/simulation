@@ -1,7 +1,7 @@
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use parry2d::na::{Isometry2, Point2, Vector2};
-use path_tracking::{PathFile, Sector};
+use path_tracking::{Parameters, PathFile, Sector, Tracker};
 use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor,
 };
@@ -9,7 +9,6 @@ use std::{
     f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_8, PI},
     time::{Duration, Instant},
 };
-use track::Parameters;
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -44,7 +43,6 @@ macro_rules! point {
 
 mod chassis;
 mod obstacle;
-mod track;
 
 use chassis::{sector_vertex, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
 use obstacle::{
@@ -54,10 +52,9 @@ use obstacle::{
 const FOCUS_TOPIC: &str = "focus";
 const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
-const LOCAL_TOPIC: &str = "local";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 1.0; // 倍速仿真
+const FF: f32 = 0.5; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const PERIOD: Duration = Duration::from_millis(40);
@@ -83,7 +80,6 @@ fn main() {
         };
         // 深度相机
         let rgbd_bounds = sector_vertex(RGBD_ON_CHASSIS, RGBD_METERS, RGBD_DEGREES);
-        let local_bounds = sector_vertex(isometry(0.0, 0.0, 1.0, 0.0), RGBD_METERS, RGBD_DEGREES);
         let rgbd = Sector {
             radius: RGBD_METERS,
             angle: RGBD_DEGREES.to_radians(),
@@ -117,7 +113,7 @@ fn main() {
             obstables.clone(),
         );
         // 循线仿真
-        let mut tracker = track::Tracker::new(
+        let mut tracker = Tracker::new(
             &path,
             Parameters {
                 search_range: rgbd,
@@ -198,7 +194,7 @@ fn main() {
             let socket = socket.clone();
             let predictor = predictor.clone();
             let rgbd_bounds = rgbd_bounds.clone();
-            let local_bounds = local_bounds.clone();
+            let local = tracker.path.slice(tracker.index)[0];
             task::spawn(async move {
                 let tr = odometry.pose;
                 let packet = Encoder::with(|figure| {
@@ -221,6 +217,7 @@ fn main() {
                     figure.with_topic(LIGHT_TOPIC, |mut topic| {
                         topic.clear();
                         topic.push(transform(&tr, vertex!(0; 0.4, 0.0; Circle, 0.4; 0)));
+                        topic.push(vertex_from_pose!(0; local; 0));
                     });
                     figure.with_topic(LIDAR_TOPIC, |mut topic| {
                         topic.clear();
@@ -239,16 +236,6 @@ fn main() {
                                 vertex!(1; p[0], p[1]; 255)
                             }));
                         });
-                    });
-                    figure.with_topic(LOCAL_TOPIC, |mut topic| {
-                        topic.clear();
-                        // topic.extend(
-                        //     local
-                        //         .iter()
-                        //         .map(|p| tr * p)
-                        //         .map(|p| vertex_from_pose!(0; p; 0)),
-                        // );
-                        topic.extend(local_bounds.iter().map(|v| transform(&tr, *v)));
                     });
                     // 轨迹预测
                     figure.with_topic(PRE_TOPIC, |mut topic| {
@@ -319,7 +306,7 @@ fn send_config(
         );
         figure.config_topic(ODOMETRY_TOPIC, 20000, 0, &[(0, rgba!(VIOLET; 0.1))], |_| {});
         figure.config_topic(FOCUS_TOPIC, 1, 1, &[(0, rgba!(BLACK; 0.0))], |_| {});
-        figure.config_topic(LIGHT_TOPIC, 1, 0, &[(0, rgba!(RED; 1.0))], |_| {});
+        figure.config_topic(LIGHT_TOPIC, u32::MAX, 0, &[(0, rgba!(RED; 1.0))], |_| {});
         figure.config_topic(
             LIDAR_TOPIC,
             u32::MAX,
@@ -351,13 +338,6 @@ fn send_config(
                     topic.extend(v.iter().map(|v| vertex_from_pose!(0; v; 64)));
                 }
             },
-        );
-        figure.config_topic(
-            LOCAL_TOPIC,
-            u32::MAX,
-            0,
-            &[(0, rgba!(VIOLET; 0.8)), (3, rgba!(VIOLET; 0.8))],
-            |_| {},
         );
     });
     task::spawn(async move {
