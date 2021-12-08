@@ -1,12 +1,12 @@
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use parry2d::na::{Isometry2, Point2, Vector2};
-use path_tracking::{Parameters, PathFile, Sector, Tracker};
+use path_tracking::{dir_from_angle, Parameters, PathFile, Sector, Tracker};
 use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor,
 };
 use std::{
-    f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_8, PI},
+    f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
     time::{Duration, Instant},
 };
 
@@ -46,7 +46,7 @@ mod obstacle;
 
 use chassis::{sector_vertex, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
 use obstacle::{
-    convex_from_origin, fit, ray_cast, Obstacle, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC,
+    convex_from_origin, fit, ray_cast, Obstacle, 三轮车, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC,
 };
 
 const FOCUS_TOPIC: &str = "focus";
@@ -54,7 +54,7 @@ const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 0.5; // 倍速仿真
+const FF: f32 = 1.0; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const PERIOD: Duration = Duration::from_millis(40);
@@ -62,6 +62,7 @@ const RGBD_ON_CHASSIS: Isometry2<f32> = pose!(-0.25, 0);
 const RGBD_METERS: f32 = 4.0;
 const RGBD_DEGREES: f32 = 85.0;
 const TRACK_SPEED: f32 = 0.6;
+const LIGHT_RADIUS: f32 = 0.4;
 
 fn main() {
     task::block_on(async {
@@ -93,6 +94,10 @@ fn main() {
                 let tr = isometry(-7688.5, -1880.0, 0.0, 0.5);
                 崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
             },
+            {
+                let tr = pose!(-7685.5, -1883.0; FRAC_PI_4);
+                三轮车.iter().map(|v| tr * v).collect::<Vec<_>>()
+            },
         ];
         // 路径
         let path = path_tracking::Path::new(
@@ -100,7 +105,7 @@ fn main() {
                 .await
                 .unwrap(),
             Sector {
-                radius: 0.4,
+                radius: LIGHT_RADIUS,
                 angle: FRAC_PI_3,
             },
             10,
@@ -117,12 +122,13 @@ fn main() {
             &path,
             Parameters {
                 search_range: rgbd,
-                light_radius: 0.4,
+                light_radius: LIGHT_RADIUS,
                 auto_reinitialize: true,
                 r#loop: false,
             },
         );
         let mut time = Instant::now();
+        let mut trend = 1.0;
         loop {
             // 更新位姿
             predictor.next().map(|d| odometry += d);
@@ -150,6 +156,7 @@ fn main() {
                     // 更新时间，10s 未碰撞则不再采样
                     time += predictor.period;
                     if time > Duration::from_secs(10) {
+                        trend = 1.0;
                         break next;
                     }
                     // 仿真，停止仍未碰撞则不再采样
@@ -158,12 +165,16 @@ fn main() {
                             speed: TRACK_SPEED * k,
                             rudder,
                         },
-                        Err(_) => break next,
+                        Err(_) => {
+                            trend = 1.0;
+                            break next;
+                        }
                     };
                     // 更新位姿，离开传感器视野仍未碰撞则不再采样
                     predictor.next().map(|d| odom += d);
                     let point = to_local * point!(odom.pose.translation.vector);
                     if !rgbd_checker.contains(RGBD_ON_CHASSIS.inverse_transform_point(&point)) {
+                        trend = 1.0;
                         break next;
                     }
                     // 测试
@@ -174,16 +185,21 @@ fn main() {
                             .iter()
                             .map(|p| to_local * point!(p.translation.vector))
                             .enumerate();
-                        let temp = o.go_through(point, &mut part);
+                        let points = o.go_through(&mut part, point, &mut trend);
+                        // 推进度
                         tracker.index.1 = checker.index.1;
                         if let Some((i, _)) = part.next() {
                             tracker.index.1 += i - 1;
                         }
-                        let next = temp.last().unwrap();
-                        let diff = next[1].atan2(next[0] - 0.4) - PI; // [-2π, 2π]
+                        // 计算控制量
+                        let rudder = {
+                            let next = points.last().unwrap();
+                            let x = next[0] - LIGHT_RADIUS;
+                            dir_from_angle(x.signum() * next[1].atan2(x.abs()) - PI)
+                        };
                         break Physical {
                             speed: TRACK_SPEED,
-                            rudder: (diff.signum() * PI - diff) / 2.0,
+                            rudder,
                         };
                     }
                 }
@@ -216,7 +232,10 @@ fn main() {
                     });
                     figure.with_topic(LIGHT_TOPIC, |mut topic| {
                         topic.clear();
-                        topic.push(transform(&tr, vertex!(0; 0.4, 0.0; Circle, 0.4; 0)));
+                        topic.push(transform(
+                            &tr,
+                            vertex!(0; LIGHT_RADIUS, 0.0; Circle, LIGHT_RADIUS; 0),
+                        ));
                         topic.push(vertex_from_pose!(0; local; 0));
                     });
                     figure.with_topic(LIDAR_TOPIC, |mut topic| {

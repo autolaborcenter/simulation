@@ -49,8 +49,9 @@ impl Obstacle {
     /// 计算线段与障碍物交点，返回可能绕过障碍物的倒序的一列点
     pub fn go_through(
         &self,
-        mut p0: Point2<f32>,
         path: &mut impl Iterator<Item = (usize, Point2<f32>)>,
+        mut p0: Point2<f32>,
+        trend: &mut f32,
     ) -> Vec<Point2<f32>> {
         // 计算方向上下界
         let any = self.vertex[0];
@@ -82,13 +83,15 @@ impl Obstacle {
                     let lr = l * (1.0 - k) + self.sum_length(j, right.1);
 
                     let mut result = vec![self.vertex[i] + seg * k];
-                    if ll < lr {
+                    if ll * *trend < lr {
+                        *trend *= 0.999;
                         while i != left.1 {
                             result.push(self.vertex[i]);
                             i = if i == 0 { self.vertex.len() - 1 } else { i - 1 };
                         }
                         result.push(self.vertex[i]);
                     } else {
+                        *trend *= 1.001;
                         while j != right.1 {
                             result.push(self.vertex[j]);
                             j = if j == self.vertex.len() - 1 { 0 } else { j + 1 };
@@ -101,11 +104,17 @@ impl Obstacle {
                 p0 = p1;
             }
         }
-        if right.0.abs() < left.0.abs() {
-            vec![self.vertex[right.1]]
-        } else {
-            vec![self.vertex[left.1]]
-        }
+
+        vec![
+            self.vertex[if left.0.abs() * *trend < right.0.abs() {
+                *trend *= 0.999;
+                left
+            } else {
+                *trend *= 1.001;
+                right
+            }
+            .1],
+        ]
     }
 
     fn sum_length(&self, mut begin: usize, end: usize) -> f32 {

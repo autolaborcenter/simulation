@@ -4,7 +4,7 @@ pub(crate) const OBSTACLES_TOPIC: &str = "obstacles";
 pub(crate) const LIDAR_TOPIC: &str = "lidar";
 
 #[allow(dead_code)]
-pub(crate) const TRICYCLE_OUTLINE: [Point2<f32>; 5] = [
+pub(crate) const 三轮车: [Point2<f32>; 5] = [
     point!(1.0, 0.0),
     point!(0.0, 0.75),
     point!(-2.0, 0.75),
