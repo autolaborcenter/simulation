@@ -35,6 +35,7 @@ impl Obstacle {
         }
     }
 
+    /// 判断点是否在障碍物内
     pub fn contains(&self, p: Point2<f32>) -> bool {
         self.aabb.contains_local_point(&p) && {
             let mut p0 = self.vertex[self.vertex.len() - 1];
@@ -50,81 +51,45 @@ impl Obstacle {
     pub fn go_through(
         &self,
         path: &mut impl Iterator<Item = (usize, Point2<f32>)>,
-        mut p0: Point2<f32>,
         trend: &mut f32,
-    ) -> Vec<Point2<f32>> {
-        // 计算方向上下界
-        let any = self.vertex[0];
-        let mut right = (any[1].atan2(any[0]), 0);
-        let mut left = right;
-        for (i, p) in self.vertex.iter().enumerate().skip(1) {
-            let angle = p[1].atan2(p[0]);
-            if angle < right.0 {
-                right = (angle, i);
-            } else if angle > left.0 {
-                left = (angle, i);
-            }
-        }
-        // 找到离开位置
-        while let Some((_, p1)) = path.next() {
-            if let Some((j, k)) = Segment(p0, p1).intersection_with_polygon(&self.vertex) {
-                if Segment(point!(0, 0), p1)
+    ) -> Point2<f32> {
+        // 找到离开位置，如果可直达，直接去
+        while let Some((_, p)) = path.next() {
+            if !self.contains(p) {
+                if Segment(point!(0, 0), p)
                     .intersection_with_polygon(&self.vertex)
                     .is_none()
                 {
-                    return vec![p1];
+                    return p;
                 } else {
-                    let mut i = if j == 0 { self.vertex.len() - 1 } else { j - 1 };
-                    let mut j = j;
-
-                    let seg = self.vertex[j] - self.vertex[i];
-                    let l = seg.norm();
-                    let ll = self.sum_length(left.1, i) + l * k;
-                    let lr = l * (1.0 - k) + self.sum_length(j, right.1);
-
-                    let mut result = vec![self.vertex[i] + seg * k];
-                    if ll * *trend < lr {
-                        *trend *= 0.999;
-                        while i != left.1 {
-                            result.push(self.vertex[i]);
-                            i = if i == 0 { self.vertex.len() - 1 } else { i - 1 };
-                        }
-                        result.push(self.vertex[i]);
-                    } else {
-                        *trend *= 1.001;
-                        while j != right.1 {
-                            result.push(self.vertex[j]);
-                            j = if j == self.vertex.len() - 1 { 0 } else { j + 1 };
-                        }
-                        result.push(self.vertex[j]);
-                    }
-                    return result;
+                    break;
                 }
-            } else {
-                p0 = p1;
             }
         }
-
-        vec![
-            self.vertex[if left.0.abs() * *trend < right.0.abs() {
-                *trend *= 0.999;
-                left
-            } else {
-                *trend *= 1.001;
-                right
-            }
-            .1],
-        ]
-    }
-
-    fn sum_length(&self, mut begin: usize, end: usize) -> f32 {
-        let mut sum = 0.0;
-        while begin != end {
-            let next = (begin + 1) % self.vertex.len();
-            sum += (self.vertex[begin] - self.vertex[next]).norm();
-            begin = next;
+        // 计算方向上下界
+        let front = self.vertex[0];
+        let front = (front[1].atan2(front[0]), front);
+        let (left, right) =
+            self.vertex
+                .iter()
+                .skip(1)
+                .fold((front, front), |(mut min, mut max), p| {
+                    let angle = p[1].atan2(p[0]);
+                    if angle < min.0 {
+                        min = (angle, *p);
+                    } else if angle > max.0 {
+                        max = (angle, *p);
+                    }
+                    (min, max)
+                });
+        // 选需要转向更小的一边
+        if left.0.abs() * *trend < right.0.abs() {
+            *trend *= 0.999;
+            left.1
+        } else {
+            *trend *= 1.001;
+            right.1
         }
-        sum
     }
 }
 

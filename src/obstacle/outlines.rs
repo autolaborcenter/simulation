@@ -27,3 +27,11 @@ pub(crate) const 崎岖轮廓: [Point2<f32>; 12] = [
     point!(4.0, 2.0),
     point!(2.0, 3.0),
 ];
+
+#[allow(dead_code)]
+pub(crate) const 墙: [Point2<f32>; 4] = [
+    point!(3.0, 0.1),
+    point!(3.0, -0.1),
+    point!(-3.0, -0.1),
+    point!(-3.0, 0.1),
+];
