@@ -1,5 +1,4 @@
 ﻿use crate::{isometry, vector, Isometry2, Point2, Vector2};
-use parry2d::bounding_volume::AABB;
 
 mod outlines;
 mod ray_cast;
@@ -14,37 +13,71 @@ pub(super) use simplify::*;
 /// 障碍物对象
 #[derive(Clone)]
 pub struct Obstacle {
-    aabb: AABB,
     pub vertex: Vec<Point2<f32>>, // 顺时针排列的顶点
+    len_range: (f32, f32),
+    left: (f32, Point2<f32>),
+    right: (f32, Point2<f32>),
 }
 
 impl Obstacle {
     /// 构造障碍物对象
-    pub fn new(sensor_on_robot: Isometry2<f32>, wall: &[Point2<f32>], width: f32) -> Option<Self> {
-        if wall.is_empty() {
+    pub fn new(
+        sensor_on_robot: Isometry2<f32>,
+        points: &[Point2<f32>],
+        width: f32,
+    ) -> Option<Self> {
+        if points.is_empty() {
             None
         } else {
-            let vertex = enlarge(wall, width * 0.5)
+            let vertex = enlarge(points, width * 0.5)
                 .into_iter()
                 .map(|p| sensor_on_robot * p)
                 .collect::<Vec<_>>();
+            let front = vertex[0];
+            let dir = front[1].atan2(front[0]);
+            let mut left = (dir, front);
+            let mut right = left;
+            let mut min = front.coords.norm_squared();
+            let mut max = min;
+            for p in vertex.iter().skip(1) {
+                let squared = p.coords.norm_squared();
+                let dir = p[1].atan2(p[0]);
+                if squared < min {
+                    min = squared;
+                } else if squared > max {
+                    max = squared;
+                }
+                if dir < left.0 {
+                    left = (dir, *p);
+                } else if dir > right.0 {
+                    right = (dir, *p);
+                }
+            }
             Some(Self {
-                aabb: AABB::from_points(vertex.iter()),
                 vertex,
+                len_range: (min, max),
+                left,
+                right,
             })
         }
     }
 
     /// 判断点是否在障碍物内
     pub fn contains(&self, p: Point2<f32>) -> bool {
-        self.aabb.contains_local_point(&p) && {
-            let mut p0 = self.vertex[self.vertex.len() - 1];
-            self.vertex.iter().all(|p1| {
-                let result = !is_left(p0, *p1, p);
-                p0 = *p1;
-                result
-            })
-        }
+        let squared = p.coords.norm_squared();
+        let dir = p[1].atan2(p[0]);
+        self.left.0 <= dir
+            && dir <= self.right.0
+            && self.len_range.0 <= squared
+            && squared <= self.len_range.1
+            && {
+                let mut p0 = self.vertex[self.vertex.len() - 1];
+                self.vertex.iter().all(|p1| {
+                    let result = !is_left(p0, *p1, p);
+                    p0 = *p1;
+                    result
+                })
+            }
     }
 
     /// 计算线段与障碍物交点，返回可能绕过障碍物的倒序的一列点
@@ -66,29 +99,13 @@ impl Obstacle {
                 }
             }
         }
-        // 计算方向上下界
-        let front = self.vertex[0];
-        let front = (front[1].atan2(front[0]), front);
-        let (left, right) =
-            self.vertex
-                .iter()
-                .skip(1)
-                .fold((front, front), |(mut min, mut max), p| {
-                    let angle = p[1].atan2(p[0]);
-                    if angle < min.0 {
-                        min = (angle, *p);
-                    } else if angle > max.0 {
-                        max = (angle, *p);
-                    }
-                    (min, max)
-                });
         // 选需要转向更小的一边
-        if left.0.abs() * *trend < right.0.abs() {
+        if self.left.0.abs() * *trend < self.right.0.abs() {
             *trend *= 0.998;
-            left.1
+            self.left.1
         } else {
             *trend *= 1.002;
-            right.1
+            self.right.1
         }
     }
 }

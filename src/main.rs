@@ -1,6 +1,6 @@
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
-use parry2d::na::{Isometry2, Point2, Vector2};
+use nalgebra::{Isometry2, Point2, Vector2};
 use path_tracking::{Parameters, PathFile, Sector, State, Tracker};
 use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor,
@@ -67,6 +67,7 @@ const LIGHT_RADIUS: f32 = 0.4;
 fn main() {
     task::block_on(async {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
+        let _ = socket.connect("127.0.0.1:12346").await;
         // 初始位姿
         let mut odometry = Odometry {
             s: 0.0,
@@ -130,15 +131,15 @@ fn main() {
             obstables.clone(),
         );
         // 循线仿真
-        let mut tracker = Tracker::new(
-            &path,
-            Parameters {
+        let mut tracker = Tracker {
+            path: &path,
+            context: path_tracking::TrackContext::new(Parameters {
                 search_range: rgbd,
                 light_radius: LIGHT_RADIUS,
                 auto_reinitialize: true,
                 r#loop: false,
-            },
-        );
+            }),
+        };
         let mut time = Instant::now();
         let mut trend = 1.0;
         loop {
@@ -200,21 +201,21 @@ fn main() {
                     }
                     // 测试
                     if let Some(o) = obstacles.iter().find(|o| o.contains(point)) {
-                        let to_local = if let State::Initializing = checker.state {
+                        let to_local = if let State::Initializing = checker.context.state {
                             isometry(-(LIGHT_RADIUS + 0.3), 0.0, 1.0, 0.0) * to_local
                         } else {
                             to_local
                         };
                         let mut part = checker
                             .path
-                            .slice(checker.index)
+                            .slice(checker.context.index)
                             .iter()
                             .map(|p| to_local * point!(p.translation.vector))
                             .take_while(|p| rgbd_checker.contains(*p))
                             .enumerate();
                         let next = o.go_through(&mut part, &mut trend);
                         // 推进度
-                        tracker.index.1 = checker.index.1
+                        tracker.context.index.1 = checker.context.index.1
                             + match part.next() {
                                 Some((0, _)) | None => 0,
                                 Some((i, _)) => i - 1,
@@ -233,7 +234,7 @@ fn main() {
             let socket = socket.clone();
             let predictor = predictor.clone();
             let rgbd_bounds = rgbd_bounds.clone();
-            let local = tracker.path.slice(tracker.index)[0];
+            let local = tracker.path.slice(tracker.context.index)[0];
             task::spawn(async move {
                 let tr = odometry.pose;
                 let packet = Encoder::with(|figure| {
@@ -304,7 +305,7 @@ fn main() {
                         }
                     });
                 });
-                let _ = socket.send_to(&packet, "127.0.0.1:12345").await;
+                let _ = socket.send(&packet).await;
             });
             // 延时到下一周期
             // let mut ignored = Default::default();
@@ -384,9 +385,9 @@ fn send_config(
     });
     task::spawn(async move {
         let clear = Encoder::with(|encoder| encoder.topic(ODOMETRY_TOPIC).clear());
-        let _ = socket.send_to(clear.as_slice(), "127.0.0.1:12345").await;
+        let _ = socket.send(clear.as_slice()).await;
         loop {
-            let _ = socket.send_to(&packet, "127.0.0.1:12345").await;
+            let _ = socket.send(&packet).await;
             task::sleep(period).await;
         }
     });
@@ -394,7 +395,7 @@ fn send_config(
 
 #[inline]
 const fn vector(x: f32, y: f32) -> Vector2<f32> {
-    use parry2d::na::{ArrayStorage, OVector};
+    use nalgebra::{ArrayStorage, OVector};
     OVector::from_array_storage(ArrayStorage([[x, y]]))
 }
 

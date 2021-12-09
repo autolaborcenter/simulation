@@ -1,6 +1,5 @@
 ﻿use super::{cross_numeric, Polar};
 use crate::{vector, Isometry2, Point2, Sector};
-use parry2d::bounding_volume::AABB;
 use rand::{thread_rng, Rng};
 use std::f32::consts::PI;
 
@@ -17,16 +16,16 @@ pub(crate) fn ray_cast(
     // 转本地多边形障碍物
     // 关于机器人做 20×20 的方形区域，只考虑至少一个点在区域内的障碍物
     let obstacles: Vec<Vec<Point>> = {
-        let half_diagonal = vector(10.0, 10.0);
         let center = pose.translation.vector;
-        let aabb = AABB::new(
-            point!(center - half_diagonal),
-            point!(center + half_diagonal),
-        );
         let to_local = pose.inverse();
         obstacles
             .iter()
-            .filter(|v| v.iter().any(|p| aabb.contains_local_point(p)))
+            .filter(|v| {
+                v.iter().any(|p| {
+                    let d = p - center;
+                    -10.0 < d[0] && d[0] < 10.0 && -10.0 < d[1] && d[1] < 10.0
+                })
+            })
             .map(|v| v.iter().map(|p| to_local * p).collect())
             .collect()
     };
