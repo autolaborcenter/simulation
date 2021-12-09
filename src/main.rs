@@ -1,12 +1,12 @@
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use parry2d::na::{Isometry2, Point2, Vector2};
-use path_tracking::{Parameters, PathFile, Sector, Tracker};
+use path_tracking::{Parameters, PathFile, Sector, State, Tracker};
 use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor,
 };
 use std::{
-    f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
+    f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_8, PI},
     time::{Duration, Instant},
 };
 
@@ -54,7 +54,7 @@ const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 0.2; // 倍速仿真
+const FF: f32 = 2.0; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const PERIOD: Duration = Duration::from_millis(40);
@@ -86,26 +86,30 @@ fn main() {
             angle: RGBD_DEGREES.to_radians(),
         };
         let obstables = vec![
+            // {
+            //     let tr = isometry(-7684.5, -1880.0, 0.0, 0.5);
+            //     崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
+            // },
+            // {
+            //     let tr = isometry(-7688.5, -1880.0, 0.0, 0.5);
+            //     崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
+            // },
             {
-                let tr = isometry(-7684.5, -1880.0, 0.0, 0.5);
+                let tr = pose!(-7682.0, -1891.0; 2.6);
                 崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
             },
-            {
-                let tr = isometry(-7688.5, -1880.0, 0.0, 0.5);
-                崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
-            },
-            {
-                let tr = pose!(-7686.0, -1882.0; FRAC_PI_4);
-                三轮车.iter().map(|v| tr * v).collect::<Vec<_>>()
-            },
-            {
-                let tr = pose!(-7684.0, -1886.0; FRAC_PI_2);
-                三轮车.iter().map(|v| tr * v).collect::<Vec<_>>()
-            },
-            {
-                let tr = pose!(-7688.5, -1888.0; FRAC_PI_4);
-                墙.iter().map(|v| tr * v).collect::<Vec<_>>()
-            },
+            // {
+            //     let tr = pose!(-7686.0, -1882.0; FRAC_PI_4);
+            //     三轮车.iter().map(|v| tr * v).collect::<Vec<_>>()
+            // },
+            // {
+            //     let tr = pose!(-7684.0, -1886.0; FRAC_PI_2);
+            //     三轮车.iter().map(|v| tr * v).collect::<Vec<_>>()
+            // },
+            // {
+            //     let tr = pose!(-7688.5, -1888.0; FRAC_PI_4);
+            //     墙.iter().map(|v| tr * v).collect::<Vec<_>>()
+            // },
         ];
         // 路径
         let path = path_tracking::Path::new(
@@ -155,6 +159,7 @@ fn main() {
                 };
                 // 循线
                 let to_local = odometry.pose.inverse();
+                let rgbd_checker = rgbd.get_checker();
                 let mut checker = tracker.clone();
                 let mut time = Duration::ZERO;
                 let mut odom = odometry.clone();
@@ -195,11 +200,17 @@ fn main() {
                     }
                     // 测试
                     if let Some(o) = obstacles.iter().find(|o| o.contains(point)) {
+                        let to_local = if let State::Initializing = checker.state {
+                            isometry(-(LIGHT_RADIUS + 0.3), 0.0, 1.0, 0.0) * to_local
+                        } else {
+                            to_local
+                        };
                         let mut part = checker
                             .path
                             .slice(checker.index)
                             .iter()
                             .map(|p| to_local * point!(p.translation.vector))
+                            .take_while(|p| rgbd_checker.contains(*p))
                             .enumerate();
                         let next = o.go_through(&mut part, &mut trend);
                         // 推进度

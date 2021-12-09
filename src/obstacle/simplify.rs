@@ -17,13 +17,13 @@ pub(crate) fn convex_from_origin(
             // 最后一条折线
             let tail = result.last_mut().unwrap();
             // 判断与上一个点形成的狭缝能否通过
-            let len = {
+            // 可以通过，分割
+            if (polar.rho - last.rho).abs() > width || {
                 let rho = f32::max(polar.rho, last.rho);
                 let theta = (polar.theta - last.theta).abs();
                 2.0 * rho * (theta * 0.5).sin()
-            };
-            // 可以通过，分割
-            if len > width {
+            } > width
+            {
                 result.push(vec![point]);
             }
             // 不可通过，计算凸包

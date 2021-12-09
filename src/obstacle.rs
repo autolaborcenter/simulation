@@ -84,10 +84,10 @@ impl Obstacle {
                 });
         // 选需要转向更小的一边
         if left.0.abs() * *trend < right.0.abs() {
-            *trend *= 0.999;
+            *trend *= 0.998;
             left.1
         } else {
-            *trend *= 1.001;
+            *trend *= 1.002;
             right.1
         }
     }
