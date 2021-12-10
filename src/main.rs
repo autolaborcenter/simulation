@@ -54,7 +54,7 @@ const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 2.5; // 倍速仿真
+const FF: f32 = 1.2; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const PERIOD: Duration = Duration::from_millis(40);
@@ -155,7 +155,6 @@ fn main() {
                         speed: TRACK_SPEED * k,
                         rudder,
                     };
-                    println!("{:?}", next);
                     // 循线
                     let to_local = odometry.pose.inverse();
                     let rgbd_checker = rgbd.get_checker();
