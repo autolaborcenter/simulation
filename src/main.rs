@@ -72,7 +72,7 @@ fn main() {
         let mut odometry = Odometry {
             s: 0.0,
             a: 0.0,
-            pose: pose!(-7686.0, -1874.0; 1.5),
+            pose: pose!(-7686.0, -1874.0; 1.7),
         };
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
@@ -88,11 +88,11 @@ fn main() {
         };
         let obstables = vec![
             {
-                let tr = isometry(-7684.5, -1880.0, 0.0, 0.5);
+                let tr = isometry(-7684.0, -1880.0, 0.0, 0.5);
                 崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
             },
             {
-                let tr = isometry(-7688.5, -1880.0, 0.0, 0.5);
+                let tr = isometry(-7688.0, -1880.0, 0.0, 0.5);
                 崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
             },
             {

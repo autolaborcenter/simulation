@@ -1,10 +1,12 @@
-﻿use crate::{isometry, vector, Isometry2, Point2, Vector2};
-use std::cmp::Ordering;
+﻿use crate::{isometry, Isometry2, Point2, Vector2};
+use std::{cmp::Ordering, f32::consts::PI};
 
+mod enlarger;
 mod outlines;
 mod ray_cast;
 mod simplify;
 
+use enlarger::Enlarger;
 pub(super) use outlines::*;
 pub(super) use ray_cast::ray_cast;
 pub(super) use simplify::*;
@@ -31,11 +33,11 @@ impl Obstacle {
         if points.len() < 3 {
             Err(ObstacleError::Empty)
         } else {
-            let mut vertex = enlarge(points, width * 0.5)
-                .into_iter()
-                .map(|p| Polar::from(sensor_on_robot * p));
+            // 扩张，并转到本地坐标系
+            let mut vertex =
+                Enlarger::new(points, width * 0.5).map(|p| Polar::from(sensor_on_robot * p));
 
-            let head = vertex.next().unwrap();
+            let mut head = vertex.next().unwrap();
             let mut last = head;
 
             let mut buffer = [
@@ -46,24 +48,33 @@ impl Obstacle {
             {
                 let mut dir = Ordering::Equal;
                 let mut step = 0;
-                for p in vertex {
+                let mut offset = 0.0;
+                for mut p in vertex {
+                    let diff = p.theta + offset - last.theta;
+                    if diff > PI {
+                        offset -= 2.0 * PI;
+                    } else if diff < -PI {
+                        offset += 2.0 * PI;
+                    }
+                    p.theta += offset;
                     let next = p.theta.partial_cmp(&last.theta).unwrap();
                     if dir != Ordering::Equal && dir != next {
                         step += 1;
-                        if step == 3 {
-                            return Err(ObstacleError::Besieged);
-                        }
                     }
                     last = p;
                     dir = next;
                     buffer[step].push(p);
                 }
+                let diff = head.theta + offset - last.theta;
+                if diff > PI {
+                    offset -= 2.0 * PI;
+                } else if diff < -PI {
+                    offset += 2.0 * PI;
+                }
+                head.theta += offset;
                 let next = head.theta.partial_cmp(&last.theta).unwrap();
                 if dir != Ordering::Equal && dir != next {
                     step += 1;
-                    if step == 3 {
-                        return Err(ObstacleError::Besieged);
-                    }
                 }
                 buffer[step].push(head);
             }
@@ -71,7 +82,10 @@ impl Obstacle {
             let first = std::mem::replace(unsafe { buffer.get_unchecked_mut(1) }, vec![]);
             let mut second = std::mem::replace(unsafe { buffer.get_unchecked_mut(2) }, vec![]);
             second.extend(buffer[0].iter());
-            if first.last().unwrap().theta > second.last().unwrap().theta {
+
+            if first.is_empty() || second.is_empty() {
+                Err(ObstacleError::Besieged)
+            } else if first.last().unwrap().theta > second.last().unwrap().theta {
                 Ok(Self {
                     front: first,
                     back: second,
@@ -177,47 +191,6 @@ impl Polar {
         let (sin, cos) = self.theta.sin_cos();
         point!(cos * self.rho, sin * self.rho)
     }
-
-    #[inline]
-    pub fn reset_radius_of_point(p: Point2<f32>, r: f32) -> Point2<f32> {
-        Polar {
-            rho: r,
-            theta: p[1].atan2(p[0]),
-        }
-        .to_point()
-    }
-}
-
-/// 扩张凸折线
-fn enlarge(v: &[Point2<f32>], len: f32) -> Vec<Point2<f32>> {
-    /// 法向量
-    #[inline]
-    fn normal(v: Vector2<f32>) -> Vector2<f32> {
-        vector(-v[1], v[0])
-    }
-
-    // 占个位置
-    let mut result = Vec::with_capacity(v.len());
-    result.push(v[0] + len * normal((v[1] - v[0]).normalize()));
-    // 扩张顶点
-    result.extend(v.windows(3).flat_map(|triple| {
-        let c = triple[1];
-        let d0 = (triple[0] - c).normalize();
-        let d1 = (triple[2] - c).normalize();
-        let cross = cross_numeric(d0, d1);
-        // 锐角切成直角
-        if cross <= 0.0 && d0.dot(&d1).is_sign_positive() {
-            vec![
-                c - len * normal(d0),
-                c - len * (d0 + d1).normalize(),
-                c + len * normal(d1),
-            ]
-        } else {
-            vec![c + (d0 + d1) * len / cross]
-        }
-    }));
-    result.push(v[v.len() - 1] - len * normal((v[v.len() - 2] - v[v.len() - 1]).normalize()));
-    result
 }
 
 /// 叉积 === 两向量围成平行四边形面积

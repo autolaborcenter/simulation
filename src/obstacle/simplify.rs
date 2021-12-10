@@ -1,5 +1,5 @@
 ﻿use super::{is_left, isometry, Point2, Polar};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, f32::consts::FRAC_PI_6};
 
 /// 同时分割+凸包
 pub(crate) fn convex_from_origin(
@@ -48,15 +48,51 @@ pub(crate) fn convex_from_origin(
     result
 }
 
-/// 线段拟合，并添加两个端点
+/// 线段拟合
 pub(crate) fn fit(src: Vec<Point2<f32>>, radius: f32, max_len: f32) -> Vec<Point2<f32>> {
-    let mut source = src.into_iter();
-    let mut result = {
-        let next = source.next().unwrap();
-        vec![Polar::reset_radius_of_point(next, radius), next]
-    };
+    match src.len() {
+        0 => return src,
+        1 => {
+            return vec![
+                src[0],
+                Polar {
+                    rho: radius,
+                    theta: src[0][0].atan2(src[0][1]),
+                }
+                .to_point(),
+            ];
+        }
+        _ => {}
+    }
+
+    let back = src[src.len() - 1];
+    let back = back[1].atan2(back[0]);
+    let front = src[0];
+    let front = front[1].atan2(front[0]);
+    let n = ((back - front) / FRAC_PI_6).round() as usize;
+
+    let mut result = Vec::with_capacity(src.len() + 2 + n);
+
+    let step = (back - front) / (n + 1) as f32;
+    for i in 0..=n {
+        result.push(
+            Polar {
+                rho: radius,
+                theta: back - i as f32 * step,
+            }
+            .to_point(),
+        );
+    }
+    result.push(
+        Polar {
+            rho: radius,
+            theta: front,
+        }
+        .to_point(),
+    );
+
     let mut buf = vec![];
-    for p in source {
+    for p in src {
         if buf.is_empty() {
             buf.push(p);
         } else {
@@ -96,8 +132,6 @@ pub(crate) fn fit(src: Vec<Point2<f32>>, radius: f32, max_len: f32) -> Vec<Point
     if let Some(p) = buf.pop() {
         result.push(p);
     }
-    let last = *result.last().unwrap();
-    result.push(Polar::reset_radius_of_point(last, radius));
     result
 }
 
