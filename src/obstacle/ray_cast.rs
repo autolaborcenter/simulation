@@ -107,16 +107,6 @@ impl Segment {
         }
         .map(|t| self.len() * t)
     }
-
-    /// 计算与多边形的交点
-    pub fn intersection_with_polygon(&self, polygon: &[Point]) -> Option<(usize, f32)> {
-        let mut p0 = polygon[polygon.len() - 1];
-        polygon.iter().enumerate().find_map(|(i, p)| {
-            let result = Self(p0, *p).intersection(self).map(|k| (i, k));
-            p0 = *p;
-            result
-        })
-    }
 }
 
 #[test]
