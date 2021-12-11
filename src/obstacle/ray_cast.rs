@@ -1,5 +1,5 @@
-﻿use super::{cross_numeric, Polar};
-use crate::{vector, Isometry2, Point2, Sector};
+﻿use super::cross_numeric;
+use crate::{vector, Isometry2, Point2, Polar, Sector};
 use rand::{thread_rng, Rng};
 use std::f32::consts::PI;
 

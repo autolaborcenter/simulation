@@ -1,12 +1,15 @@
-﻿use crate::{isometry, vector, Isometry2, Point2, Vector2};
-use std::{cmp::Ordering, f32::consts::PI};
+﻿use crate::{isometry, Isometry2, Point2, Polar, Vector2};
+use std::cmp::Ordering;
 
+mod builder;
 mod enlarger;
 mod outlines;
 mod ray_cast;
 mod simplify;
 
+use builder::ObstacleBuilder;
 use enlarger::Enlarger;
+
 pub(super) use outlines::*;
 pub(super) use ray_cast::ray_cast;
 pub(super) use simplify::*;
@@ -33,55 +36,16 @@ impl Obstacle {
         if points.len() < 3 {
             Err(ObstacleError::Empty)
         } else {
-            // 扩张，并转到本地坐标系
             let mut vertex =
                 Enlarger::new(points, width * 0.5).map(|p| Polar::from(sensor_on_robot * p));
 
-            let mut head = vertex.next().unwrap();
-            let mut last = head;
-
-            let mut buffer = [
-                Vec::<Polar>::new(),
-                Vec::<Polar>::new(),
-                Vec::<Polar>::new(),
-            ];
-            {
-                let mut dir = Ordering::Equal;
-                let mut step = 0;
-                let mut offset = 0.0;
-                for mut p in vertex {
-                    let diff = p.theta + offset - last.theta;
-                    if diff > PI {
-                        offset -= 2.0 * PI;
-                    } else if diff < -PI {
-                        offset += 2.0 * PI;
-                    }
-                    p.theta += offset;
-                    let next = p.theta.partial_cmp(&last.theta).unwrap();
-                    if dir != Ordering::Equal && dir != next {
-                        step += 1;
-                    }
-                    last = p;
-                    dir = next;
-                    buffer[step].push(p);
-                }
-                let diff = head.theta + offset - last.theta;
-                if diff > PI {
-                    offset -= 2.0 * PI;
-                } else if diff < -PI {
-                    offset += 2.0 * PI;
-                }
-                head.theta += offset;
-                let next = head.theta.partial_cmp(&last.theta).unwrap();
-                if dir != Ordering::Equal && dir != next {
-                    step += 1;
-                }
-                buffer[step].push(head);
-            }
-
-            let first = std::mem::replace(unsafe { buffer.get_unchecked_mut(1) }, vec![]);
-            let mut second = std::mem::replace(unsafe { buffer.get_unchecked_mut(2) }, vec![]);
-            second.extend(buffer[0].iter());
+            let (first, second) = {
+                let head = vertex.next().unwrap();
+                let mut builder = ObstacleBuilder::new(head.theta);
+                vertex.for_each(|p| builder.push(p));
+                builder.push(head);
+                builder.collect()
+            };
 
             if first.is_empty() || second.is_empty() {
                 Err(ObstacleError::Besieged)
@@ -166,32 +130,6 @@ impl Obstacle {
         } else {
             Ordering::Greater
         });
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Polar {
-    pub rho: f32,
-    pub theta: f32,
-}
-
-impl From<Point2<f32>> for Polar {
-    #[inline]
-    fn from(p: Point2<f32>) -> Self {
-        Self {
-            rho: p.coords.norm(),
-            theta: p.coords[1].atan2(p.coords[0]),
-        }
-    }
-}
-
-impl From<Polar> for Point2<f32> {
-    #[inline]
-    fn from(p: Polar) -> Self {
-        let (sin, cos) = p.theta.sin_cos();
-        Point2 {
-            coords: vector(cos, sin) * p.rho,
-        }
     }
 }
 

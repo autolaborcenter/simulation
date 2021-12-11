@@ -43,11 +43,13 @@ macro_rules! point {
 
 mod chassis;
 mod obstacle;
+mod polar;
 
 use chassis::{sector_vertex, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
 use obstacle::{
     convex_from_origin, fit, ray_cast, Obstacle, 三轮车, 墙, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC,
 };
+use polar::Polar;
 
 const FOCUS_TOPIC: &str = "focus";
 const LIGHT_TOPIC: &str = "light";
