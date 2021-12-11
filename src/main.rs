@@ -270,16 +270,16 @@ fn main() {
                             topic.extend(
                                 lidar
                                     .iter()
-                                    .map(|p| tr * p.to_point())
+                                    .map(|p| tr * Point2::from(*p))
                                     .map(|p| vertex!(0; p[0], p[1]; 0)),
                             );
                         }
                         obstacles
                             .iter()
                             .map(|o| {
-                                let mut vec =
-                                    o.front.iter().map(|p| p.to_point()).collect::<Vec<_>>();
-                                vec.extend(o.back.iter().map(|p| p.to_point()));
+                                let mut vec: Vec<_> =
+                                    o.front.iter().map(|p| Point2::from(*p)).collect();
+                                vec.extend(o.back.iter().map(|p| Point2::from(*p)));
                                 vec
                             })
                             .for_each(|v| {

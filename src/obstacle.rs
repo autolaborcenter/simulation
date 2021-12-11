@@ -1,4 +1,4 @@
-﻿use crate::{isometry, Isometry2, Point2, Vector2};
+﻿use crate::{isometry, vector, Isometry2, Point2, Vector2};
 use std::{cmp::Ordering, f32::consts::PI};
 
 mod enlarger;
@@ -185,11 +185,13 @@ impl From<Point2<f32>> for Polar {
     }
 }
 
-impl Polar {
+impl From<Polar> for Point2<f32> {
     #[inline]
-    pub fn to_point(&self) -> Point2<f32> {
-        let (sin, cos) = self.theta.sin_cos();
-        point!(cos * self.rho, sin * self.rho)
+    fn from(p: Polar) -> Self {
+        let (sin, cos) = p.theta.sin_cos();
+        Point2 {
+            coords: vector(cos, sin) * p.rho,
+        }
     }
 }
 
@@ -207,9 +209,9 @@ fn is_left(a: Point2<f32>, b: Point2<f32>, c: Point2<f32>) -> bool {
 
 #[inline]
 fn cmp(c: Polar, seg: (Polar, Polar)) -> Ordering {
-    let a = seg.0.to_point();
-    let b = seg.1.to_point();
-    let c = c.to_point();
+    let a = Point2::from(seg.0);
+    let b = Point2::from(seg.1);
+    let c = Point2::from(c);
     cross_numeric(b - a, c - b).partial_cmp(&0.0).unwrap()
 }
 

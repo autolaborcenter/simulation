@@ -1,7 +1,7 @@
 ﻿use super::cross_numeric;
 use crate::{vector, Point2, Vector2};
 
-/// 扩张凸折线
+/// 扩张凸折线（在线计算）
 pub(super) struct Enlarger<'a> {
     v: &'a [Point2<f32>],
     len: f32,
