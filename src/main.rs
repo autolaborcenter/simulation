@@ -47,7 +47,8 @@ mod polar;
 
 use chassis::{sector_vertex, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
 use obstacle::{
-    convex_from_origin, fit, ray_cast, Obstacle, 三轮车, 墙, 崎岖轮廓, LIDAR_TOPIC, OBSTACLES_TOPIC,
+    convex_from_origin, fit, ray_cast, Obstacle, ObstacleError::*, 三轮车, 墙, 崎岖轮廓,
+    LIDAR_TOPIC, OBSTACLES_TOPIC,
 };
 use polar::Polar;
 
@@ -64,7 +65,7 @@ const RGBD_ON_CHASSIS: Isometry2<f32> = pose!(0.1, 0);
 const RGBD_METERS: f32 = 4.0;
 const RGBD_DEGREES: f32 = 170.0;
 const TRACK_SPEED: f32 = 0.6;
-const LIGHT_RADIUS: f32 = 0.75;
+const LIGHT_RADIUS: f32 = 0.4;
 
 fn main() {
     task::block_on(async {
@@ -74,7 +75,7 @@ fn main() {
         let mut odometry = Odometry {
             s: 0.0,
             a: 0.0,
-            pose: pose!(-7686.0, -1874.0; 1.7),
+            pose: pose!(-7686.0, -1875.0; 1.7),
         };
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
@@ -89,6 +90,10 @@ fn main() {
             angle: RGBD_DEGREES.to_radians(),
         };
         let obstables = vec![
+            {
+                let tr = isometry(-7686.0, -1872.5, 0.0, 0.5);
+                三轮车.iter().map(|v| tr * v).collect::<Vec<_>>()
+            },
             {
                 let tr = isometry(-7684.0, -1880.0, 0.0, 0.5);
                 崎岖轮廓.iter().map(|v| tr * v).collect::<Vec<_>>()
@@ -143,95 +148,115 @@ fn main() {
         loop {
             // 更新位姿
             predictor.next().map(|d| odometry += d);
+            let width = if let State::Initializing = tracker.context.state {
+                1.0
+            } else {
+                0.7
+            };
             // 构造障碍物对象
             let lidar = ray_cast(odometry.pose, RGBD_ON_CHASSIS, &obstables, rgbd);
-            let obstacles = convex_from_origin(lidar.clone(), 0.8)
-                .into_iter()
-                .map(|src| fit(src, rgbd.radius + 0.5, 0.04))
-                .filter_map(|wall| Obstacle::new(RGBD_ON_CHASSIS, &wall, 0.8).ok())
-                .collect::<Vec<_>>();
-            predictor.predictor.target = match tracker.track(odometry.pose) {
-                Err(_) => Physical::RELEASED,
-                Ok((k, rudder)) => {
-                    let next = Physical {
-                        speed: TRACK_SPEED * k,
-                        rudder,
-                    };
-                    // 循线
-                    let to_local = odometry.pose.inverse();
-                    let rgbd_checker = rgbd.get_checker();
-                    let mut checker = tracker.clone();
-                    let mut time = Duration::ZERO;
-                    let mut odom = odometry.clone();
-                    let mut predictor = predictor.clone();
-                    let mut last = odom.pose.translation.vector;
-                    loop {
-                        // 更新时间，10s 未碰撞则不再采样
-                        time += predictor.period;
-                        if time > Duration::from_secs(10) {
-                            trend = 1.0;
-                            break next;
-                        }
-                        // 仿真，停止仍未碰撞则不再采样
-                        predictor.predictor.target = match checker.track(odom.pose) {
-                            Ok((k, rudder)) => Physical {
-                                speed: TRACK_SPEED * k,
-                                rudder,
-                            },
-                            Err(_) => {
+            let mut besieged = vec![];
+            let mut obstacles = vec![];
+            for convex in convex_from_origin(lidar.clone(), 0.8) {
+                match Obstacle::new(
+                    RGBD_ON_CHASSIS,
+                    &fit(convex, rgbd.radius + 0.5, 0.04),
+                    width,
+                ) {
+                    Ok(o) => obstacles.push(o),
+                    Err(Empty) => {}
+                    Err(Besieged(o)) => {
+                        besieged.push(o);
+                        break;
+                    }
+                }
+            }
+            predictor.predictor.target = if besieged.is_empty() {
+                match tracker.track(odometry.pose) {
+                    Err(_) => Physical::RELEASED,
+                    Ok((k, rudder)) => {
+                        let next = Physical {
+                            speed: TRACK_SPEED * k,
+                            rudder,
+                        };
+                        // 循线
+                        let to_local = odometry.pose.inverse();
+                        let rgbd_checker = rgbd.get_checker();
+                        let mut checker = tracker.clone();
+                        let mut time = Duration::ZERO;
+                        let mut odom = odometry.clone();
+                        let mut predictor = predictor.clone();
+                        let mut last = odom.pose.translation.vector;
+                        loop {
+                            // 更新时间，10s 未碰撞则不再采样
+                            time += predictor.period;
+                            if time > Duration::from_secs(10) {
                                 trend = 1.0;
                                 break next;
                             }
-                        };
-                        // 更新位姿
-                        if let Some(d) = predictor.next() {
-                            odom += d;
-                        } else {
-                            trend = 1.0;
-                            break next;
-                        }
-                        // 跳过一些点以降低计算量
-                        if (odom.pose.translation.vector - last).norm_squared() > 0.0025 {
-                            last = odom.pose.translation.vector;
-                        } else {
-                            continue;
-                        }
-                        // 变换到机器人坐标系，离开视野仍未碰撞则不再采样
-                        let point = to_local * point!(odom.pose.translation.vector);
-                        if point.coords.norm_squared() > RGBD_METERS.powi(2) {
-                            trend = 1.0;
-                            break next;
-                        }
-                        // 测试
-                        if let Some(o) = obstacles.iter().find(|o| o.contains(point)) {
-                            let to_local = if let State::Initializing = checker.context.state {
-                                isometry(-(LIGHT_RADIUS + 0.3), 0.0, 1.0, 0.0) * to_local
+                            // 仿真，停止仍未碰撞则不再采样
+                            predictor.predictor.target = match checker.track(odom.pose) {
+                                Ok((k, rudder)) => Physical {
+                                    speed: TRACK_SPEED * k,
+                                    rudder,
+                                },
+                                Err(_) => {
+                                    trend = 1.0;
+                                    break next;
+                                }
+                            };
+                            // 更新位姿
+                            if let Some(d) = predictor.next() {
+                                odom += d;
                             } else {
-                                to_local
-                            };
-                            let part = checker
-                                .path
-                                .slice(checker.context.index)
-                                .iter()
-                                .map(|p| to_local * point!(p.translation.vector))
-                                .take_while(|p| rgbd_checker.contains(p.coords))
-                                .collect::<Vec<_>>();
-                            let mut iter = part.iter().copied().enumerate();
-                            let next = o.go_through(&mut iter, &mut trend);
-                            // 推进度
-                            tracker.context.index.1 = checker.context.index.1
-                                + match part.len() {
-                                    0 => 0,
-                                    len => iter.next().map_or(len, |(i, _)| i) - 1,
+                                trend = 1.0;
+                                break next;
+                            }
+                            // 跳过一些点以降低计算量
+                            if (odom.pose.translation.vector - last).norm_squared() > 0.0025 {
+                                last = odom.pose.translation.vector;
+                            } else {
+                                continue;
+                            }
+                            // 变换到机器人坐标系，离开视野仍未碰撞则不再采样
+                            let point = to_local * point!(odom.pose.translation.vector);
+                            if point.coords.norm_squared() > RGBD_METERS.powi(2) {
+                                trend = 1.0;
+                                break next;
+                            }
+                            // 测试
+                            if let Some(o) = obstacles.iter().find(|o| o.contains(point)) {
+                                let target = if let State::Initializing = checker.context.state {
+                                    point!(-LIGHT_RADIUS, 0.0)
+                                } else {
+                                    point!(0.0, 0.0)
                                 };
-                            // 计算控制量
-                            break Physical {
-                                speed: TRACK_SPEED,
-                                rudder: (-next.theta).clamp(-FRAC_PI_2, FRAC_PI_2),
-                            };
+                                let part = checker
+                                    .path
+                                    .slice(checker.context.index)
+                                    .iter()
+                                    .map(|p| to_local * p * target)
+                                    .take_while(|p| rgbd_checker.contains(p.coords))
+                                    .collect::<Vec<_>>();
+                                let mut iter = part.iter().copied().enumerate();
+                                let next = o.go_through(&mut iter, &mut trend);
+                                // 推进度
+                                tracker.context.index.1 = checker.context.index.1
+                                    + match part.len() {
+                                        0 => 0,
+                                        len => iter.next().map_or(len, |(i, _)| i) - 1,
+                                    };
+                                // 计算控制量
+                                break Physical {
+                                    speed: TRACK_SPEED,
+                                    rudder: -next.theta.clamp(-FRAC_PI_2, FRAC_PI_2),
+                                };
+                            }
                         }
                     }
                 }
+            } else {
+                Physical::RELEASED
             };
             // 编码并发送
             let socket = socket.clone();
@@ -275,6 +300,12 @@ fn main() {
                                     .map(|p| tr * Point2::from(*p))
                                     .map(|p| vertex!(0; p[0], p[1]; 0)),
                             );
+                        }
+                        for b in besieged {
+                            topic.extend_polygon(b.into_iter().map(|p| {
+                                let p = tr * Point2::from(p);
+                                vertex!(2; p[0], p[1]; 255)
+                            }));
                         }
                         obstacles
                             .iter()
@@ -365,7 +396,11 @@ fn send_config(
             LIDAR_TOPIC,
             u32::MAX,
             0,
-            &[(0, rgba!(DARKGOLDENROD; 0.3)), (1, rgba!(GOLD; 1.0))],
+            &[
+                (0, rgba!(DARKGOLDENROD; 0.3)),
+                (1, rgba!(GOLD; 1.0)),
+                (2, rgba!(RED; 1.0)),
+            ],
             |_| {},
         );
         figure.config_topic(PRE_TOPIC, u32::MAX, 0, &[(0, rgba!(SKYBLUE; 0.3))], |_| {});

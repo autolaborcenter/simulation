@@ -23,7 +23,7 @@ pub struct Obstacle {
 
 pub enum ObstacleError {
     Empty,
-    Besieged,
+    Besieged(Vec<Polar>),
 }
 
 impl Obstacle {
@@ -47,8 +47,10 @@ impl Obstacle {
                 builder.collect()
             };
 
-            if first.is_empty() || second.is_empty() {
-                Err(ObstacleError::Besieged)
+            if first.is_empty() {
+                Err(ObstacleError::Besieged(second))
+            } else if second.is_empty() {
+                Err(ObstacleError::Besieged(first))
             } else if first.last().unwrap().theta > second.last().unwrap().theta {
                 Ok(Self {
                     front: first,
@@ -87,12 +89,18 @@ impl Obstacle {
         // 选需要转向更小的一边
         let left = self.front.last().unwrap();
         let right = self.back.last().unwrap();
-        if left.theta.abs() * *trend < right.theta.abs() {
+        if *trend * left.theta.abs() / left.rho < right.theta.abs() / right.rho {
             *trend *= 0.998;
-            *left
+            Polar {
+                rho: left.rho,
+                theta: left.theta + 0.1 / left.rho,
+            }
         } else {
             *trend *= 1.002;
-            *right
+            Polar {
+                rho: right.rho,
+                theta: right.theta - 0.1 / right.rho,
+            }
         }
     }
 
