@@ -55,7 +55,7 @@ const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 1.2; // 倍速仿真
+const FF: f32 = 3.0; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const PERIOD: Duration = Duration::from_millis(40);
@@ -161,13 +161,12 @@ fn main() {
             };
             // 构造障碍物对象
             let person = person.to_points();
-            let mut lidar = ray_cast(odometry.pose, RGBD_ON_CHASSIS, &obstacles_on_world, rgbd);
-            lidar.extend(ray_cast(
-                odometry.pose,
-                RGBD_ON_CHASSIS,
-                &vec![person.0.clone(), person.1.clone()],
-                rgbd,
-            ));
+            let lidar = {
+                let mut obstacles = obstacles_on_world.clone();
+                obstacles.push(person.0.clone());
+                obstacles.push(person.1.clone());
+                ray_cast(odometry.pose, RGBD_ON_CHASSIS, obstacles, rgbd)
+            };
             let mut besieged = vec![];
             let mut obstacles = vec![];
             for convex in convex_from_origin(lidar.clone(), 0.8) {
