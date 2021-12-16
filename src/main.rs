@@ -7,7 +7,7 @@ use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor,
 };
 use std::{
-    f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
+    f32::consts::{FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
     time::{Duration, Instant},
 };
 
@@ -73,7 +73,7 @@ fn main() {
         let mut odometry = Odometry {
             s: 0.0,
             a: 0.0,
-            pose: pose!(-7686.0, -1875.0; 1.7),
+            pose: pose!(-7686.0, -1873.5; 1.7),
         };
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
@@ -89,7 +89,7 @@ fn main() {
         };
         let obstacles_on_world = vec![
             {
-                let tr = isometry(-7686.0, -1872.5, 0.0, 0.5);
+                let tr = isometry(-7686.0, -1871.5, 0.0, 0.5);
                 三轮车.iter().map(|v| tr * v).collect::<Vec<_>>()
             },
             {
@@ -113,7 +113,11 @@ fn main() {
                 墙.iter().map(|v| tr * v).collect::<Vec<_>>()
             },
         ];
-        let mut person = Person::new(40, 0.4, pose!(-7681.5, -1898.0; 0.0));
+        let mut person = Person::new(
+            (50 as f32 / FF).round() as u8,
+            0.4,
+            pose!(-7682.0, -1898.0; 0.0),
+        );
         // 路径
         let path = path_tracking::Path::new(
             PathFile::open(PathBuf::from(format!("path/{}.path", PATH_TO_TRACK)).as_path())
@@ -148,7 +152,7 @@ fn main() {
         loop {
             // 更新移动障碍物
             person.update();
-            if time - person_time > Duration::from_secs(5) {
+            if time - person_time > Duration::from_secs_f32(5.0 / FF) {
                 person.next = PI;
                 person_time = time;
             }
@@ -202,7 +206,7 @@ fn main() {
                         loop {
                             // 更新时间，10s 未碰撞则不再采样
                             time += predictor.period;
-                            if time > Duration::from_secs_f32(rgbd.radius / TRACK_SPEED) {
+                            if time > Duration::from_secs(10) {
                                 trend = 1.0;
                                 break next;
                             }
@@ -236,44 +240,34 @@ fn main() {
                                 trend = 1.0;
                                 break next;
                             }
-                            // 测试
+                            // 是否遭遇障碍物
                             if let Some(o) = obstacles.iter().find(|o| o.contains(point)) {
-                                let target = if let State::Initializing = checker.context.state {
-                                    point!(-LIGHT_RADIUS, 0.0)
-                                } else {
-                                    point!(0.0, 0.0)
+                                // 如果正在上线，目标位置后移
+                                let target = match checker.context.state {
+                                    State::Initializing => point!(-LIGHT_RADIUS, 0.0),
+                                    _ => point!(0.0, 0.0),
                                 };
-                                let mut skip = 0;
-                                let part = checker
+                                // 路径变换到机器人坐标系上作为目标点的位置
+                                let slice = checker
                                     .path
                                     .slice(checker.context.index)
                                     .iter()
-                                    .map(|p| to_local * p * target)
-                                    .skip_while(|p| {
-                                        let contains = rgbd_checker.contains(p.coords);
-                                        if !contains {
-                                            skip += 1;
-                                        }
-                                        !contains
-                                    })
-                                    .take_while(|p| rgbd_checker.contains(p.coords))
-                                    .collect::<Vec<_>>();
-                                let mut iter = part.iter().copied().enumerate();
-                                let next = o.go_through(&mut iter, &mut trend);
-                                let index = checker.context.index.1
-                                    + match part.len() {
-                                        0 => 0,
-                                        len => skip + iter.next().map_or(len, |(i, _)| i) - 1,
-                                    };
-                                // 推进度
-                                if let State::Tracking = tracker.context.state {
-                                } else {
-                                    tracker.context.index.1 = index;
-                                }
+                                    .map(|p| to_local * p * target);
+                                // 计算避开障碍物的方法
+                                let (index, rudder) = o.to_avoid(
+                                    slice,
+                                    |p| rgbd_checker.contains(p.coords),
+                                    &mut trend,
+                                );
+                                // 如果已经离开路线，推进度
+                                match tracker.context.state {
+                                    State::Tracking => {}
+                                    _ => tracker.context.index.1 = checker.context.index.1 + index,
+                                };
                                 // 计算控制量
                                 break Physical {
                                     speed: TRACK_SPEED,
-                                    rudder: -next.theta.clamp(-FRAC_PI_2, FRAC_PI_2),
+                                    rudder,
                                 };
                             }
                         }
