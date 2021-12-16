@@ -8,8 +8,9 @@ use pm1_control_model::{
 };
 use std::{
     f32::consts::{FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
-    time::{Duration, Instant},
+    time::Duration,
 };
+use ticker::Ticker;
 
 macro_rules! vertex_from_pose {
     ($level:expr; $pose:expr; $alpha:expr) => {
@@ -43,10 +44,13 @@ macro_rules! point {
 }
 
 mod chassis;
+mod locate;
 mod outlines;
 mod ray_cast;
+mod ticker;
 
 use chassis::{sector_vertex, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
+use locate::{Locator, LOCATE_TOPIC};
 use outlines::{Person, 三轮车, 墙, 崎岖轮廓, LIDAR_TOPIC, MOVING_TOPIC, OBSTACLES_TOPIC};
 use ray_cast::ray_cast;
 
@@ -55,7 +59,7 @@ const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
 const PRE_TOPIC: &str = "pre";
 
-const FF: f32 = 3.0; // 倍速仿真
+const FF: f32 = 1.5; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const PERIOD: Duration = Duration::from_millis(40);
@@ -75,6 +79,7 @@ fn main() {
             a: 0.0,
             pose: pose!(-7686.0, -1873.5; 1.7),
         };
+        let mut locator = Locator::new(isometry(-0.15, 0.0, 1.0, 0.0), 5.0);
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
             period: PERIOD,
@@ -146,13 +151,15 @@ fn main() {
                 r#loop: false,
             }),
         };
-        let mut time = Instant::now();
+        let mut ticker = Ticker::new(PERIOD.div_f32(FF));
+        let mut time = Duration::ZERO;
         let mut person_time = time;
         let mut trend = 1.0;
         loop {
             // 更新移动障碍物
             person.update();
-            if time - person_time > Duration::from_secs_f32(5.0 / FF) {
+            time += PERIOD;
+            if time - person_time > Duration::from_secs(5) {
                 person.next = PI;
                 person_time = time;
             }
@@ -163,6 +170,8 @@ fn main() {
             } else {
                 0.7
             };
+            // 定位
+            let locate = locator.update(time, odometry.pose);
             // 构造障碍物对象
             let person = person.to_points();
             let lidar = {
@@ -289,9 +298,14 @@ fn main() {
                         light.push(transform(&tr, vertex!(0; 2.0, 0.0; Circle, 3.0; 0)));
                     });
 
+                    // 里程计
                     figure
                         .topic(ODOMETRY_TOPIC)
                         .push(vertex_from_pose!(0; odometry.pose; 0));
+                    // 定位
+                    if let Some(p) = locate {
+                        figure.topic(LOCATE_TOPIC).push(vertex!(0; p[0], p[1]; 64));
+                    }
                     figure.with_topic(CHASSIS_TOPIC, |mut topic| {
                         topic.clear();
                         topic.extend(ROBOT_OUTLINE.iter().map(|v| transform(&tr, *v)));
@@ -376,10 +390,7 @@ fn main() {
             // 延时到下一周期
             // let mut ignored = Default::default();
             // let _ = async_std::io::stdin().read_line(&mut ignored).await;
-            time += PERIOD.div_f32(FF);
-            if let Some(dur) = time.checked_duration_since(Instant::now()) {
-                task::sleep(dur).await;
-            }
+            ticker.wait().await;
         }
     });
 }
@@ -413,7 +424,6 @@ fn send_config(
             ],
             |_| {},
         );
-        figure.config_topic(ODOMETRY_TOPIC, 20000, 0, &[(0, rgba!(VIOLET; 0.1))], |_| {});
         figure.config_topic(FOCUS_TOPIC, 1, 1, &[(0, rgba!(BLACK; 0.0))], |_| {});
         figure.config_topic(LIGHT_TOPIC, u32::MAX, 0, &[(0, rgba!(RED; 1.0))], |_| {});
         figure.config_topic(
@@ -448,6 +458,20 @@ fn send_config(
             |_| {},
         );
         figure.config_topic(
+            ODOMETRY_TOPIC,
+            10000,
+            0,
+            &[(0, rgba!(VIOLET; 0.05))],
+            |_| {},
+        );
+        figure.config_topic(
+            LOCATE_TOPIC,
+            2000,
+            0,
+            &[(0, rgba!(DARKSEAGREEN; 0.6))],
+            |_| {},
+        );
+        figure.config_topic(
             PATH_TOPIC,
             u32::MAX,
             0,
@@ -461,7 +485,10 @@ fn send_config(
         );
     });
     task::spawn(async move {
-        let clear = Encoder::with(|encoder| encoder.topic(ODOMETRY_TOPIC).clear());
+        let clear = Encoder::with(|encoder| {
+            encoder.topic(ODOMETRY_TOPIC).clear();
+            encoder.topic(LOCATE_TOPIC).clear();
+        });
         let _ = socket.send(clear.as_slice()).await;
         loop {
             let _ = socket.send(&packet).await;
