@@ -47,8 +47,8 @@ mod polar;
 
 use chassis::{sector_vertex, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
 use obstacle::{
-    convex_from_origin, fit, ray_cast, Obstacle, ObstacleError::*, 三轮车, 墙, 崎岖轮廓,
-    LIDAR_TOPIC, OBSTACLES_TOPIC,
+    convex_from_origin, fit, ray_cast, Obstacle, ObstacleError::*, Person, 三轮车, 墙, 崎岖轮廓,
+    LIDAR_TOPIC, MOVING_TOPIC, OBSTACLES_TOPIC,
 };
 use polar::Polar;
 
@@ -89,7 +89,7 @@ fn main() {
             radius: RGBD_METERS,
             angle: RGBD_DEGREES.to_radians(),
         };
-        let obstables = vec![
+        let obstacles_on_world = vec![
             {
                 let tr = isometry(-7686.0, -1872.5, 0.0, 0.5);
                 三轮车.iter().map(|v| tr * v).collect::<Vec<_>>()
@@ -115,6 +115,7 @@ fn main() {
                 墙.iter().map(|v| tr * v).collect::<Vec<_>>()
             },
         ];
+        let mut person = Person::new(40, 0.4, pose!(-7681.5, -1898.0; 0.0));
         // 路径
         let path = path_tracking::Path::new(
             PathFile::open(PathBuf::from(format!("path/{}.path", PATH_TO_TRACK)).as_path())
@@ -131,7 +132,7 @@ fn main() {
             socket.clone(),
             Duration::from_secs(3),
             &path,
-            obstables.clone(),
+            obstacles_on_world.clone(),
         );
         // 循线仿真
         let mut tracker = Tracker {
@@ -144,8 +145,15 @@ fn main() {
             }),
         };
         let mut time = Instant::now();
+        let mut person_time = time;
         let mut trend = 1.0;
         loop {
+            // 更新移动障碍物
+            person.update();
+            if time - person_time > Duration::from_secs(5) {
+                person.next = PI;
+                person_time = time;
+            }
             // 更新位姿
             predictor.next().map(|d| odometry += d);
             let width = if let State::Initializing = tracker.context.state {
@@ -154,7 +162,14 @@ fn main() {
                 0.7
             };
             // 构造障碍物对象
-            let lidar = ray_cast(odometry.pose, RGBD_ON_CHASSIS, &obstables, rgbd);
+            let person = person.to_points();
+            let mut lidar = ray_cast(odometry.pose, RGBD_ON_CHASSIS, &obstacles_on_world, rgbd);
+            lidar.extend(ray_cast(
+                odometry.pose,
+                RGBD_ON_CHASSIS,
+                &vec![person.0.clone(), person.1.clone()],
+                rgbd,
+            ));
             let mut besieged = vec![];
             let mut obstacles = vec![];
             for convex in convex_from_origin(lidar.clone(), 0.8) {
@@ -190,7 +205,7 @@ fn main() {
                         loop {
                             // 更新时间，10s 未碰撞则不再采样
                             time += predictor.period;
-                            if time > Duration::from_secs(10) {
+                            if time > Duration::from_secs_f32(rgbd.radius / TRACK_SPEED) {
                                 trend = 1.0;
                                 break next;
                             }
@@ -231,21 +246,33 @@ fn main() {
                                 } else {
                                     point!(0.0, 0.0)
                                 };
+                                let mut skip = 0;
                                 let part = checker
                                     .path
                                     .slice(checker.context.index)
                                     .iter()
                                     .map(|p| to_local * p * target)
+                                    .skip_while(|p| {
+                                        let contains = rgbd_checker.contains(p.coords);
+                                        if !contains {
+                                            skip += 1;
+                                        }
+                                        !contains
+                                    })
                                     .take_while(|p| rgbd_checker.contains(p.coords))
                                     .collect::<Vec<_>>();
                                 let mut iter = part.iter().copied().enumerate();
                                 let next = o.go_through(&mut iter, &mut trend);
-                                // 推进度
-                                tracker.context.index.1 = checker.context.index.1
+                                let index = checker.context.index.1
                                     + match part.len() {
                                         0 => 0,
-                                        len => iter.next().map_or(len, |(i, _)| i) - 1,
+                                        len => skip + iter.next().map_or(len, |(i, _)| i) - 1,
                                     };
+                                // 推进度
+                                if let State::Tracking = tracker.context.state {
+                                } else {
+                                    tracker.context.index.1 = index;
+                                }
                                 // 计算控制量
                                 break Physical {
                                     speed: TRACK_SPEED,
@@ -289,6 +316,12 @@ fn main() {
                             vertex!(0; LIGHT_RADIUS, 0.0; Circle, LIGHT_RADIUS; 0),
                         ));
                         topic.push(vertex_from_pose!(0; local; 0));
+                    });
+                    figure.with_topic(MOVING_TOPIC, |mut topic| {
+                        topic.clear();
+                        let (l, r) = person;
+                        topic.extend_polygon(l.into_iter().map(|p| vertex!(0; p[0], p[1]; 255)));
+                        topic.extend_polygon(r.into_iter().map(|p| vertex!(0; p[0], p[1]; 255)));
                     });
                     figure.with_topic(LIDAR_TOPIC, |mut topic| {
                         topic.clear();
@@ -415,6 +448,13 @@ fn send_config(
                     topic.extend_polygon(o.into_iter().map(|p| vertex!(0; p[0], p[1]; 64)));
                 }
             },
+        );
+        figure.config_topic(
+            MOVING_TOPIC,
+            u32::MAX,
+            0,
+            &[(0, rgba!(GREENYELLOW; 0.6))],
+            |_| {},
         );
         figure.config_topic(
             PATH_TOPIC,
