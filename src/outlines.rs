@@ -1,6 +1,5 @@
-﻿use std::f32::consts::FRAC_PI_8;
-
-use crate::{isometry, polar::Polar, Isometry2, Point2};
+﻿use crate::{isometry, Isometry2, Point2, Polar};
+use std::f32::consts::FRAC_PI_8;
 
 pub(crate) const OBSTACLES_TOPIC: &str = "obstacles";
 pub(crate) const LIDAR_TOPIC: &str = "lidar";

@@ -16,3 +16,4 @@ monitor-tool = { path = "../monitor-tool-rs", default-features = false, features
 ] }
 pm1-control-model = { path = "../pm1-control-model", default-features = false }
 path-tracking = { path = "../path-tracking" }
+obstacle-avoidance = { path = "../obstacle-avoidance" }

@@ -1,5 +1,4 @@
-﻿use super::cross_numeric;
-use crate::{vector, Isometry2, Point2, Polar, Sector};
+﻿use crate::{vector, Isometry2, Point2, Polar, Sector, Vector2};
 use rand::{thread_rng, Rng};
 use std::f32::consts::PI;
 
@@ -107,6 +106,12 @@ impl Segment {
         }
         .map(|t| self.len() * t)
     }
+}
+
+/// 叉积 === 两向量围成平行四边形面积
+#[inline]
+fn cross_numeric(v0: Vector2<f32>, v1: Vector2<f32>) -> f32 {
+    v0[1] * v1[0] - v0[0] * v1[1]
 }
 
 #[test]

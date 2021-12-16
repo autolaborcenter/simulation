@@ -1,6 +1,7 @@
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use nalgebra::{Isometry2, Point2, Vector2};
+use obstacle_avoidance::{convex_from_origin, fit, Obstacle, ObstacleError::*, Polar};
 use path_tracking::{Parameters, PathFile, Sector, State, TrackContext, Tracker};
 use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor,
@@ -42,15 +43,12 @@ macro_rules! point {
 }
 
 mod chassis;
-mod obstacle;
-mod polar;
+mod outlines;
+mod ray_cast;
 
 use chassis::{sector_vertex, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
-use obstacle::{
-    convex_from_origin, fit, ray_cast, Obstacle, ObstacleError::*, Person, 三轮车, 墙, 崎岖轮廓,
-    LIDAR_TOPIC, MOVING_TOPIC, OBSTACLES_TOPIC,
-};
-use polar::Polar;
+use outlines::{Person, 三轮车, 墙, 崎岖轮廓, LIDAR_TOPIC, MOVING_TOPIC, OBSTACLES_TOPIC};
+use ray_cast::ray_cast;
 
 const FOCUS_TOPIC: &str = "focus";
 const LIGHT_TOPIC: &str = "light";
@@ -484,9 +482,3 @@ const fn vector(x: f32, y: f32) -> Vector2<f32> {
     use nalgebra::{ArrayStorage, OVector};
     OVector::from_array_storage(ArrayStorage([[x, y]]))
 }
-
-// #[inline]
-// const fn angle(cos: f32, sin: f32) -> UnitComplex<f32> {
-//     use parry2d::na::{Complex, Unit};
-//     Unit::new_unchecked(Complex { re: cos, im: sin })
-// }

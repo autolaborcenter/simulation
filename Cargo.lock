@@ -456,6 +456,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "obstacle-avoidance"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -693,6 +700,7 @@ dependencies = [
  "async-std",
  "monitor-tool",
  "nalgebra",
+ "obstacle-avoidance",
  "palette",
  "path-tracking",
  "pm1-control-model",
