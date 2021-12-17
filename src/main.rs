@@ -4,7 +4,7 @@ use nalgebra::{Isometry2, Point2, Vector2};
 use obstacle_avoidance::{convex_from_origin, fit, Obstacle, ObstacleError::*, Polar};
 use path_tracking::{Parameters, PathFile, Sector, State, TrackContext, Tracker};
 use pm1_control_model::{
-    isometry, Odometry, Optimizer, Physical, Pm1Predictor, TrajectoryPredictor,
+    isometry, Odometry, Optimizer, Physical, Pm1Model, Pm1Predictor, TrajectoryPredictor, Velocity,
 };
 use std::{
     f32::consts::{FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
@@ -50,8 +50,8 @@ mod outlines;
 mod ray_cast;
 mod ticker;
 
-use chassis::{sector_vertex, CHASSIS_TOPIC, ODOMETRY_TOPIC, ROBOT_OUTLINE, RUDDER};
-use locate::{Locator, LOCATE_TOPIC};
+use chassis::{sector_vertex, CHASSIS_TOPIC, POSE_TOPIC, ROBOT_OUTLINE, RUDDER};
+use locate::{Location, LOCATION_TOPIC, ODOMETRY_TOPIC};
 use outlines::{Person, 三轮车, 墙, 崎岖轮廓, LIDAR_TOPIC, MOVING_TOPIC, OBSTACLES_TOPIC};
 use ray_cast::ray_cast;
 
@@ -75,16 +75,20 @@ fn main() {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
         let _ = socket.connect("127.0.0.1:12345").await;
         // 初始位姿
-        let mut odometry = Odometry {
+        let mut chassis_pose = Odometry {
             s: 0.0,
             a: 0.0,
             pose: pose!(-7686.0, -1873.5; 1.7),
         };
-        let mut locator = Locator::new(isometry(-0.15, 0.0, 1.0, 0.0), 5.0, 0.03);
+        let mut location = Location::new(isometry(-0.15, 0.0, 1.0, 0.0), 5.0, 0.03);
+        let mut odometry = chassis_pose;
+        // 底盘模型的测量值
+        let model = Pm1Model::new(0.46, 0.36, 0.1);
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
             period: PERIOD,
-            model: Default::default(),
+            // 底盘模型的实际值
+            model: Pm1Model::new(0.465, 0.355, 0.105),
             predictor: Pm1Predictor::new(Optimizer::new(0.5, 1.2, PERIOD), PERIOD),
         };
         // 深度相机
@@ -122,7 +126,7 @@ fn main() {
         let mut person = Person::new(
             (50 as f32 / FF).round() as u8,
             0.4,
-            pose!(-7682.0, -1898.0; 0.0),
+            pose!(-7681.0, -1898.0; 0.0),
         );
         // 路径
         let path = path_tracking::Path::new(
@@ -157,6 +161,16 @@ fn main() {
         let mut person_time = time;
         let mut trend = 1.0;
         loop {
+            // 更新位姿
+            if let Some(d) = predictor.next() {
+                chassis_pose += d;
+                let wheels = predictor.model.velocity_to_wheels(Velocity {
+                    v: d.pose.translation.vector[0].signum() * d.s,
+                    w: d.pose.rotation.im.signum() * d.a,
+                });
+                let d1 = model.wheels_to_velocity(wheels) * Duration::from_secs(1);
+                odometry += d1;
+            }
             // 更新移动障碍物
             person.update();
             time += PERIOD;
@@ -164,25 +178,22 @@ fn main() {
                 person.next = PI;
                 person_time = time;
             }
-            // 更新位姿
-            predictor.next().map(|d| odometry += d);
-            let width = if let State::Initializing = tracker.context.state {
-                1.0
-            } else {
-                0.7
-            };
             // 定位
-            let locate = locator.update(time, odometry.pose);
+            let locate = location.update(time, chassis_pose.pose);
             // 构造障碍物对象
+            let mut besieged = vec![];
+            let mut obstacles = vec![];
             let person = person.to_points();
             let lidar = {
                 let mut obstacles = obstacles_on_world.clone();
                 obstacles.push(person.0.clone());
                 obstacles.push(person.1.clone());
-                ray_cast(odometry.pose, RGBD_ON_CHASSIS, obstacles, rgbd)
+                ray_cast(chassis_pose.pose, RGBD_ON_CHASSIS, obstacles, rgbd)
             };
-            let mut besieged = vec![];
-            let mut obstacles = vec![];
+            let width = match tracker.context.state {
+                State::Initializing => 1.0,
+                _ => 0.7,
+            };
             for convex in convex_from_origin(lidar.clone(), 0.8) {
                 match Obstacle::new(
                     RGBD_ON_CHASSIS,
@@ -198,7 +209,7 @@ fn main() {
                 }
             }
             predictor.predictor.target = if besieged.is_empty() {
-                match tracker.track(odometry.pose) {
+                match tracker.track(chassis_pose.pose) {
                     Err(_) => Physical::RELEASED,
                     Ok((k, rudder)) => {
                         let next = Physical {
@@ -206,11 +217,11 @@ fn main() {
                             rudder,
                         };
                         // 循线
-                        let to_local = odometry.pose.inverse();
+                        let to_local = chassis_pose.pose.inverse();
                         let rgbd_checker = rgbd.get_checker();
                         let mut checker = tracker.clone();
                         let mut time = Duration::ZERO;
-                        let mut odom = odometry.clone();
+                        let mut odom = chassis_pose.clone();
                         let mut predictor = predictor.clone();
                         let mut last = odom.pose.translation.vector;
                         loop {
@@ -292,20 +303,26 @@ fn main() {
             let rgbd_bounds = rgbd_bounds.clone();
             let local = tracker.path.slice(tracker.context.index)[0];
             task::spawn(async move {
-                let tr = odometry.pose;
+                let tr = chassis_pose.pose;
                 let packet = Encoder::with(|figure| {
                     figure.with_topic(FOCUS_TOPIC, |mut light| {
                         light.clear();
                         light.push(transform(&tr, vertex!(0; 2.0, 0.0; Circle, 3.0; 0)));
                     });
 
+                    // 真实位姿
+                    figure
+                        .topic(POSE_TOPIC)
+                        .push(vertex_from_pose!(0; chassis_pose.pose; 0));
                     // 里程计
                     figure
                         .topic(ODOMETRY_TOPIC)
                         .push(vertex_from_pose!(0; odometry.pose; 0));
                     // 定位
                     if let Some(p) = locate {
-                        figure.topic(LOCATE_TOPIC).push(vertex!(0; p[0], p[1]; 64));
+                        figure
+                            .topic(LOCATION_TOPIC)
+                            .push(vertex!(0; p[0], p[1]; 64));
                     }
                     figure.with_topic(CHASSIS_TOPIC, |mut topic| {
                         topic.clear();
@@ -366,21 +383,21 @@ fn main() {
                         topic.clear();
                         let period = predictor.period;
                         let mut t = Duration::ZERO;
-                        let mut s = odometry.s + 0.1;
-                        let mut a = odometry.a + FRAC_PI_8;
+                        let mut s = chassis_pose.s + 0.1;
+                        let mut a = chassis_pose.a + FRAC_PI_8;
 
-                        let max_s = odometry.s + 5.0;
-                        let max_a = odometry.s + PI * 2.0;
+                        let max_s = chassis_pose.s + 5.0;
+                        let max_a = chassis_pose.s + PI * 2.0;
                         let max_t = Duration::from_secs(10);
                         for d in predictor {
                             t += period;
-                            odometry += d;
-                            if odometry.s > s || odometry.a > a {
-                                s = odometry.s + 0.1;
-                                a = odometry.a + FRAC_PI_8;
-                                topic.push(vertex_from_pose!(0; odometry.pose; 0));
+                            chassis_pose += d;
+                            if chassis_pose.s > s || chassis_pose.a > a {
+                                s = chassis_pose.s + 0.1;
+                                a = chassis_pose.a + FRAC_PI_8;
+                                topic.push(vertex_from_pose!(0; chassis_pose.pose; 0));
                             }
-                            if odometry.s > max_s || odometry.a > max_a || t > max_t {
+                            if chassis_pose.s > max_s || chassis_pose.a > max_a || t > max_t {
                                 break;
                             }
                         }
@@ -458,18 +475,24 @@ fn send_config(
             &[(0, rgba!(GREENYELLOW; 0.6))],
             |_| {},
         );
+        figure.sync_set(
+            POSE_TOPIC,
+            &[POSE_TOPIC, LOCATION_TOPIC, ODOMETRY_TOPIC],
+            Some(Duration::from_secs(120)),
+        );
+        figure.config_topic(POSE_TOPIC, 10000, 0, &[(0, rgba!(VIOLET; 0.05))], |_| {});
+        figure.config_topic(
+            LOCATION_TOPIC,
+            2000,
+            0,
+            &[(0, rgba!(DARKSEAGREEN; 0.5))],
+            |_| {},
+        );
         figure.config_topic(
             ODOMETRY_TOPIC,
             10000,
             0,
-            &[(0, rgba!(VIOLET; 0.05))],
-            |_| {},
-        );
-        figure.config_topic(
-            LOCATE_TOPIC,
-            2000,
-            0,
-            &[(0, rgba!(DARKSEAGREEN; 0.6))],
+            &[(0, rgba!(DARKGOLDENROD; 0.2))],
             |_| {},
         );
         figure.config_topic(
@@ -487,8 +510,9 @@ fn send_config(
     });
     task::spawn(async move {
         let clear = Encoder::with(|encoder| {
+            encoder.topic(POSE_TOPIC).clear();
+            encoder.topic(LOCATION_TOPIC).clear();
             encoder.topic(ODOMETRY_TOPIC).clear();
-            encoder.topic(LOCATE_TOPIC).clear();
         });
         let _ = socket.send(clear.as_slice()).await;
         loop {

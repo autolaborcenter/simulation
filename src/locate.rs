@@ -1,16 +1,17 @@
 ﻿use crate::{gaussian::Gaussian, Isometry2, Point2};
 use std::time::Duration;
 
-pub(super) const LOCATE_TOPIC: &str = "locate";
+pub(crate) const LOCATION_TOPIC: &str = "location";
+pub(crate) const ODOMETRY_TOPIC: &str = "odometry";
 
-pub(super) struct Locator {
+pub(crate) struct Location {
     beacon_on_robot: Isometry2<f32>,
     gaussian: Gaussian,
     period: Duration,
     deadline: Duration,
 }
 
-impl Locator {
+impl Location {
     #[inline]
     pub fn new(pose: Isometry2<f32>, frequency: f32, sigma: f32) -> Self {
         Self {
