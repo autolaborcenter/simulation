@@ -44,6 +44,7 @@ macro_rules! point {
 }
 
 mod chassis;
+mod gaussian;
 mod locate;
 mod outlines;
 mod ray_cast;
@@ -79,7 +80,7 @@ fn main() {
             a: 0.0,
             pose: pose!(-7686.0, -1873.5; 1.7),
         };
-        let mut locator = Locator::new(isometry(-0.15, 0.0, 1.0, 0.0), 5.0);
+        let mut locator = Locator::new(isometry(-0.15, 0.0, 1.0, 0.0), 5.0, 0.03);
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
             period: PERIOD,
