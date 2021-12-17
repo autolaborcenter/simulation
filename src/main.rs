@@ -6,6 +6,7 @@ use path_tracking::{Parameters, PathFile, Sector, State, TrackContext, Tracker};
 use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Model, Pm1Predictor, TrajectoryPredictor, Velocity,
 };
+use pose_filter::{ParticleFilter, ParticleFilterParameters};
 use std::{
     f32::consts::{FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
     time::Duration,
@@ -59,9 +60,13 @@ const FOCUS_TOPIC: &str = "focus";
 const LIGHT_TOPIC: &str = "light";
 const PATH_TOPIC: &str = "path";
 const PRE_TOPIC: &str = "pre";
+const PARTICLES_TOPIC: &str = "particle";
+const FILTERED_TOPIC: &str = "filtered";
 
-const FF: f32 = 1.5; // 倍速仿真
+const FF: f32 = 0.8; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
+
+const BEACON: Point2<f32> = point!(-0.15, 0.0);
 
 const PERIOD: Duration = Duration::from_millis(40);
 const RGBD_ON_CHASSIS: Isometry2<f32> = pose!(0.1, 0);
@@ -80,15 +85,22 @@ fn main() {
             a: 0.0,
             pose: pose!(-7686.0, -1873.5; 1.7),
         };
+        // 定位
         let mut location = Location::new(
             isometry(-0.15, 0.0, 1.0, 0.0),
-            Duration::from_millis(50),
+            Duration::from_millis(5),
             5.0,
             0.03,
         );
         let mut odometry = chassis_pose;
+        let mut particle_filter = ParticleFilter::new(ParticleFilterParameters {
+            count: 40,
+            measure_weight: 8.0,
+            beacon_on_robot: BEACON,
+            max_inconsistency: 0.2,
+        });
         // 底盘模型的测量值
-        let model = Pm1Model::new(0.46, 0.36, 0.1);
+        let model = Pm1Model::new(0.46, 0.36, 0.105);
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
             period: PERIOD,
@@ -166,6 +178,13 @@ fn main() {
         let mut person_time = time;
         let mut trend = 1.0;
         loop {
+            // 更新移动障碍物
+            person.update();
+            time += PERIOD;
+            if time - person_time > Duration::from_secs(5) {
+                person.next = PI;
+                person_time = time;
+            }
             // 更新位姿
             if let Some(d) = predictor.next() {
                 chassis_pose += d;
@@ -175,16 +194,14 @@ fn main() {
                 });
                 let d1 = model.wheels_to_velocity(wheels) * Duration::from_secs(1);
                 odometry += d1;
-            }
-            // 更新移动障碍物
-            person.update();
-            time += PERIOD;
-            if time - person_time > Duration::from_secs(5) {
-                person.next = PI;
-                person_time = time;
+                particle_filter.update(time, odometry.pose);
             }
             // 定位
             let locate = location.update(time, chassis_pose.pose);
+            if let Some((t, p)) = locate {
+                particle_filter.measure(t, p);
+            }
+            let filtered = particle_filter.transform(odometry.pose);
             // 构造障碍物对象
             let mut besieged = vec![];
             let mut obstacles = vec![];
@@ -307,6 +324,11 @@ fn main() {
             let predictor = predictor.clone();
             let rgbd_bounds = rgbd_bounds.clone();
             let local = tracker.path.slice(tracker.context.index)[0];
+            let particles = particle_filter
+                .particles()
+                .iter()
+                .map(|(p, _)| vertex_from_pose!(0;p;0))
+                .collect::<Vec<_>>();
             task::spawn(async move {
                 let tr = chassis_pose.pose;
                 let packet = Encoder::with(|figure| {
@@ -323,11 +345,19 @@ fn main() {
                     figure
                         .topic(ODOMETRY_TOPIC)
                         .push(vertex_from_pose!(0; odometry.pose; 0));
+                    // 滤波
+                    figure
+                        .topic(FILTERED_TOPIC)
+                        .push(vertex_from_pose!(0; filtered; 0));
                     // 定位
-                    if let Some((t, p)) = locate {
+                    if let Some((_, p)) = locate {
                         figure
                             .topic(LOCATION_TOPIC)
                             .push(vertex!(0; p[0], p[1]; 64));
+                        figure.with_topic(PARTICLES_TOPIC, |mut topic| {
+                            topic.clear();
+                            topic.extend(particles);
+                        });
                     }
                     figure.with_topic(CHASSIS_TOPIC, |mut topic| {
                         topic.clear();
@@ -442,7 +472,7 @@ fn send_config(
             &[
                 (0, rgba!(AZURE; 1.0)),
                 (1, rgba!(GOLD; 1.0)),
-                (2, rgba!(ORANGE; 1.0)),
+                (2, rgba!(BLUE; 1.0)),
                 (3, rgba!(GREEN; 0.5)),
             ],
             |_| {},
@@ -484,12 +514,12 @@ fn send_config(
         {
             figure.layer(
                 POSE_TOPIC,
-                &[POSE_TOPIC, LOCATION_TOPIC, ODOMETRY_TOPIC],
+                &[POSE_TOPIC, LOCATION_TOPIC, ODOMETRY_TOPIC, FILTERED_TOPIC],
                 None,
             );
             figure.sync_set(
                 POSE_TOPIC,
-                &[POSE_TOPIC, LOCATION_TOPIC, ODOMETRY_TOPIC],
+                &[POSE_TOPIC, LOCATION_TOPIC, ODOMETRY_TOPIC, FILTERED_TOPIC],
                 Some(Duration::from_secs(120)),
             );
             figure.config_topic(POSE_TOPIC, u32::MAX, 0, &[(0, rgba!(VIOLET; 0.05))], |_| {});
@@ -497,17 +527,25 @@ fn send_config(
                 LOCATION_TOPIC,
                 u32::MAX,
                 0,
-                &[(0, rgba!(DARKSEAGREEN; 0.4))],
+                &[(0, rgba!(DARKSEAGREEN; 0.8))],
                 |_| {},
             );
             figure.config_topic(
                 ODOMETRY_TOPIC,
                 u32::MAX,
                 0,
-                &[(0, rgba!(DARKGOLDENROD; 0.2))],
+                &[(0, rgba!(GRAY; 0.2))],
                 |_| {},
             );
+            figure.config_topic(FILTERED_TOPIC, u32::MAX, 0, &[(0, rgba!(RED; 0.6))], |_| {});
         }
+        figure.config_topic(
+            PARTICLES_TOPIC,
+            u32::MAX,
+            0,
+            &[(0, rgba!(ORANGE; 0.2))],
+            |_| {},
+        );
         figure.config_topic(
             PATH_TOPIC,
             u32::MAX,
@@ -523,9 +561,15 @@ fn send_config(
     });
     task::spawn(async move {
         let clear = Encoder::with(|encoder| {
-            encoder.topic(POSE_TOPIC).clear();
-            encoder.topic(LOCATION_TOPIC).clear();
-            encoder.topic(ODOMETRY_TOPIC).clear();
+            for topic in &[
+                POSE_TOPIC,
+                LOCATION_TOPIC,
+                ODOMETRY_TOPIC,
+                FILTERED_TOPIC,
+                PARTICLES_TOPIC,
+            ] {
+                encoder.topic(topic).clear();
+            }
         });
         let _ = socket.send(clear.as_slice()).await;
         loop {

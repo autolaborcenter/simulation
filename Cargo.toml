@@ -11,9 +11,15 @@ rand = "*"      # 随机性
 async-std = "*" # 异步
 nalgebra = "*"  # 线性代数
 
+# 显示
 monitor-tool = { path = "../monitor-tool-rs", default-features = false, features = [
     "sender",
 ] }
+# 底盘运动
 pm1-control-model = { path = "../pm1-control-model", default-features = false }
-path-tracking = { path = "../path-tracking" }
+# 定位
+pose-filter = { path = "../pose-filter" }
+# 避障
 obstacle-avoidance = { path = "../obstacle-avoidance" }
+# 循线
+path-tracking = { path = "../path-tracking" }

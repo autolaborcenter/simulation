@@ -30,7 +30,7 @@ pub(crate) fn ray_cast(
     let mut theta = -dir_range;
     while theta <= dir_range {
         let ray = Segment(
-            point!(0, 0),
+            Polar { rho: 0.2, theta }.into(),
             Polar {
                 rho: range.radius,
                 theta,
@@ -42,7 +42,7 @@ pub(crate) fn ray_cast(
             .iter()
             .filter_map(|c| ray.ray_cast(c))
             .min_by(|a, b| a.partial_cmp(b).unwrap())
-            .map(|rho| rho + thread_rng().gen_range(-0.01..0.01))
+            .map(|rho| rho + 0.2 + thread_rng().gen_range(-0.01..0.01))
             .map(|rho| result.push(Polar { rho, theta }));
     }
     result

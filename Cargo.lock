@@ -590,6 +590,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pose-filter"
+version = "0.1.0"
+dependencies = [
+ "chassis",
+ "nalgebra",
+ "rand",
+]
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -704,6 +713,7 @@ dependencies = [
  "palette",
  "path-tracking",
  "pm1-control-model",
+ "pose-filter",
  "rand",
 ]
 
