@@ -80,7 +80,12 @@ fn main() {
             a: 0.0,
             pose: pose!(-7686.0, -1873.5; 1.7),
         };
-        let mut location = Location::new(isometry(-0.15, 0.0, 1.0, 0.0), 5.0, 0.03);
+        let mut location = Location::new(
+            isometry(-0.15, 0.0, 1.0, 0.0),
+            Duration::from_millis(50),
+            5.0,
+            0.03,
+        );
         let mut odometry = chassis_pose;
         // 底盘模型的测量值
         let model = Pm1Model::new(0.46, 0.36, 0.1);
@@ -319,7 +324,7 @@ fn main() {
                         .topic(ODOMETRY_TOPIC)
                         .push(vertex_from_pose!(0; odometry.pose; 0));
                     // 定位
-                    if let Some(p) = locate {
+                    if let Some((t, p)) = locate {
                         figure
                             .topic(LOCATION_TOPIC)
                             .push(vertex!(0; p[0], p[1]; 64));
@@ -475,26 +480,34 @@ fn send_config(
             &[(0, rgba!(GREENYELLOW; 0.6))],
             |_| {},
         );
-        figure.sync_set(
-            POSE_TOPIC,
-            &[POSE_TOPIC, LOCATION_TOPIC, ODOMETRY_TOPIC],
-            Some(Duration::from_secs(120)),
-        );
-        figure.config_topic(POSE_TOPIC, 10000, 0, &[(0, rgba!(VIOLET; 0.05))], |_| {});
-        figure.config_topic(
-            LOCATION_TOPIC,
-            2000,
-            0,
-            &[(0, rgba!(DARKSEAGREEN; 0.5))],
-            |_| {},
-        );
-        figure.config_topic(
-            ODOMETRY_TOPIC,
-            10000,
-            0,
-            &[(0, rgba!(DARKGOLDENROD; 0.2))],
-            |_| {},
-        );
+        // pose 组
+        {
+            figure.layer(
+                POSE_TOPIC,
+                &[POSE_TOPIC, LOCATION_TOPIC, ODOMETRY_TOPIC],
+                None,
+            );
+            figure.sync_set(
+                POSE_TOPIC,
+                &[POSE_TOPIC, LOCATION_TOPIC, ODOMETRY_TOPIC],
+                Some(Duration::from_secs(120)),
+            );
+            figure.config_topic(POSE_TOPIC, u32::MAX, 0, &[(0, rgba!(VIOLET; 0.05))], |_| {});
+            figure.config_topic(
+                LOCATION_TOPIC,
+                u32::MAX,
+                0,
+                &[(0, rgba!(DARKSEAGREEN; 0.4))],
+                |_| {},
+            );
+            figure.config_topic(
+                ODOMETRY_TOPIC,
+                u32::MAX,
+                0,
+                &[(0, rgba!(DARKGOLDENROD; 0.2))],
+                |_| {},
+            );
+        }
         figure.config_topic(
             PATH_TOPIC,
             u32::MAX,
