@@ -93,14 +93,14 @@ fn main() {
             0.03,
         );
         let mut odometry = chassis_pose;
+        // 底盘模型的测量值
         let mut particle_filter = ParticleFilter::new(ParticleFilterParameters {
+            default_model: Pm1Model::new(0.46, 0.36, 0.105),
             count: 40,
             measure_weight: 8.0,
             beacon_on_robot: BEACON,
             max_inconsistency: 0.2,
         });
-        // 底盘模型的测量值
-        let model = Pm1Model::new(0.46, 0.36, 0.105);
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
             period: PERIOD,
@@ -192,16 +192,20 @@ fn main() {
                     v: d.pose.translation.vector[0].signum() * d.s,
                     w: d.pose.rotation.im.signum() * d.a,
                 });
-                let d1 = model.wheels_to_velocity(wheels) * Duration::from_secs(1);
+                let d1 = particle_filter
+                    .parameters
+                    .default_model
+                    .wheels_to_velocity(wheels)
+                    * Duration::from_secs(1);
                 odometry += d1;
-                particle_filter.update(time, odometry.pose);
+                particle_filter.update(time, wheels);
             }
             // 定位
             let locate = location.update(time, chassis_pose.pose);
             if let Some((t, p)) = locate {
                 particle_filter.measure(t, p);
             }
-            let filtered = particle_filter.transform(odometry.pose);
+            let filtered = particle_filter.get();
             // 构造障碍物对象
             let mut besieged = vec![];
             let mut obstacles = vec![];
@@ -327,7 +331,7 @@ fn main() {
             let particles = particle_filter
                 .particles()
                 .iter()
-                .map(|(p, _)| vertex_from_pose!(0;p;0))
+                .map(|p| vertex_from_pose!(0; p.pose; 0))
                 .collect::<Vec<_>>();
             task::spawn(async move {
                 let tr = chassis_pose.pose;
@@ -354,11 +358,11 @@ fn main() {
                         figure
                             .topic(LOCATION_TOPIC)
                             .push(vertex!(0; p[0], p[1]; 64));
-                        figure.with_topic(PARTICLES_TOPIC, |mut topic| {
-                            topic.clear();
-                            topic.extend(particles);
-                        });
                     }
+                    figure.with_topic(PARTICLES_TOPIC, |mut topic| {
+                        topic.clear();
+                        topic.extend(particles);
+                    });
                     figure.with_topic(CHASSIS_TOPIC, |mut topic| {
                         topic.clear();
                         topic.extend(ROBOT_OUTLINE.iter().map(|v| transform(&tr, *v)));
@@ -441,9 +445,9 @@ fn main() {
                 let _ = socket.send(&packet).await;
             });
             // 延时到下一周期
-            // let mut ignored = Default::default();
-            // let _ = async_std::io::stdin().read_line(&mut ignored).await;
-            ticker.wait().await;
+            let mut ignored = Default::default();
+            let _ = async_std::io::stdin().read_line(&mut ignored).await;
+            // ticker.wait().await;
         }
     });
 }
