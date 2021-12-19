@@ -1,3 +1,4 @@
+use crate::gaussian::Gaussian;
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use nalgebra::{Isometry2, Point2, Vector2};
@@ -7,6 +8,7 @@ use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Model, Pm1Predictor, TrajectoryPredictor, Velocity,
 };
 use pose_filter::{ParticleFilter, ParticleFilterParameters};
+use rand::{thread_rng, Rng};
 use std::{
     f32::consts::{FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
     time::Duration,
@@ -63,7 +65,7 @@ const PRE_TOPIC: &str = "pre";
 const PARTICLES_TOPIC: &str = "particle";
 const FILTERED_TOPIC: &str = "filtered";
 
-const FF: f32 = 0.8; // 倍速仿真
+const FF: f32 = 2.0; // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const BEACON: Point2<f32> = point!(-0.15, 0.0);
@@ -83,29 +85,47 @@ fn main() {
         let mut chassis_pose = Odometry {
             s: 0.0,
             a: 0.0,
-            pose: pose!(-7686.0, -1873.5; 1.7),
+            pose: pose!(-7686.0, -1875; 1.7),
         };
         // 定位
         let mut location = Location::new(
             isometry(-0.15, 0.0, 1.0, 0.0),
             Duration::from_millis(20),
             5.0,
-            0.03,
+            0.05,
         );
         let mut odometry = chassis_pose;
         // 底盘模型的测量值
-        let mut particle_filter = ParticleFilter::new(ParticleFilterParameters {
-            default_model: Pm1Model::new(0.465, 0.355, 0.105),
-            count: 80,
-            measure_weight: 8.0,
-            beacon_on_robot: BEACON,
-            max_inconsistency: 0.2,
-        });
+        let model_measured = Pm1Model::new(0.465, 0.355, 0.12);
+        // 底盘模型的实际值
+        let model_real = Pm1Model::new(0.465, 0.355, 0.105);
+        let mut particle_filter = ParticleFilter::new(
+            ParticleFilterParameters {
+                default_model: model_measured,
+                memory_rate: 0.75,
+                count: 80,
+                measure_weight: 8.0,
+                beacon_on_robot: BEACON,
+                max_inconsistency: 0.2,
+            },
+            |model, weight, size| {
+                let mut rng = thread_rng();
+                let k = (1.0 - weight) * 0.025;
+                (0..size)
+                    .map(|_| {
+                        Pm1Model::new(
+                            model.width,
+                            model.length,
+                            model.wheel * rng.gen_range(1.0 - k..1.0 + k),
+                        )
+                    })
+                    .collect()
+            },
+        );
         // 底盘运动仿真
         let mut predictor = TrajectoryPredictor::<Pm1Predictor> {
             period: PERIOD,
-            // 底盘模型的实际值
-            model: Pm1Model::new(0.465, 0.355, 0.105),
+            model: model_real,
             predictor: Pm1Predictor::new(Optimizer::new(0.5, 1.2, PERIOD), PERIOD),
         };
         // 深度相机
@@ -186,17 +206,20 @@ fn main() {
                 person_time = time;
             }
             // 更新位姿
+            let mut gaussian = Gaussian::new(1.0, 0.02);
             if let Some(d) = predictor.next() {
                 chassis_pose += d;
-                let wheels = predictor.model.velocity_to_wheels(Velocity {
+                let mut wheels = predictor.model.velocity_to_wheels(Velocity {
                     v: d.pose.translation.vector[0].signum() * d.s,
                     w: d.pose.rotation.im.signum() * d.a,
                 });
+                wheels.left *= gaussian.next();
+                wheels.right *= gaussian.next();
                 let d1 = particle_filter
                     .parameters
                     .default_model
                     .wheels_to_velocity(wheels)
-                    * Duration::from_secs(1);
+                    .to_odometry();
                 odometry += d1;
                 particle_filter.update(time, wheels);
             }
@@ -206,9 +229,12 @@ fn main() {
                 particle_filter.measure(t, p);
             }
             let filtered = particle_filter.get();
+            let best = particle_filter.particles().get(0);
             println!(
-                "{:?}",
-                (filtered.translation.vector - chassis_pose.pose.translation.vector).norm()
+                "{:8?} {:.3} {:.3}",
+                time,
+                (filtered.translation.vector - chassis_pose.pose.translation.vector).norm(),
+                best.map_or(0.0, |p| p.model.wheel),
             );
             // 构造障碍物对象
             let mut besieged = vec![];
@@ -239,19 +265,26 @@ fn main() {
                 }
             }
             predictor.predictor.target = if besieged.is_empty() {
-                match tracker.track(chassis_pose.pose) {
-                    Err(_) => Physical::RELEASED,
+                match tracker.track(filtered) {
+                    Err(_) => Physical {
+                        speed: TRACK_SPEED,
+                        rudder: FRAC_PI_3,
+                    },
                     Ok((k, rudder)) => {
                         let next = Physical {
                             speed: TRACK_SPEED * k,
                             rudder,
                         };
                         // 循线
-                        let to_local = chassis_pose.pose.inverse();
+                        let to_local = filtered.inverse();
                         let rgbd_checker = rgbd.get_checker();
                         let mut checker = tracker.clone();
                         let mut time = Duration::ZERO;
-                        let mut odom = chassis_pose.clone();
+                        let mut odom = Odometry {
+                            s: 0.0,
+                            a: 0.0,
+                            pose: filtered,
+                        };
                         let mut predictor = predictor.clone();
                         let mut last = odom.pose.translation.vector;
                         loop {
