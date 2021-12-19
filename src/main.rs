@@ -88,15 +88,15 @@ fn main() {
         // 定位
         let mut location = Location::new(
             isometry(-0.15, 0.0, 1.0, 0.0),
-            Duration::from_millis(5),
+            Duration::from_millis(20),
             5.0,
             0.03,
         );
         let mut odometry = chassis_pose;
         // 底盘模型的测量值
         let mut particle_filter = ParticleFilter::new(ParticleFilterParameters {
-            default_model: Pm1Model::new(0.46, 0.36, 0.105),
-            count: 40,
+            default_model: Pm1Model::new(0.465, 0.355, 0.105),
+            count: 80,
             measure_weight: 8.0,
             beacon_on_robot: BEACON,
             max_inconsistency: 0.2,
@@ -206,6 +206,10 @@ fn main() {
                 particle_filter.measure(t, p);
             }
             let filtered = particle_filter.get();
+            println!(
+                "{:?}",
+                (filtered.translation.vector - chassis_pose.pose.translation.vector).norm()
+            );
             // 构造障碍物对象
             let mut besieged = vec![];
             let mut obstacles = vec![];
@@ -338,9 +342,8 @@ fn main() {
                 let packet = Encoder::with(|figure| {
                     figure.with_topic(FOCUS_TOPIC, |mut light| {
                         light.clear();
-                        light.push(transform(&tr, vertex!(0; 2.0, 0.0; Circle, 3.0; 0)));
+                        light.push(transform(&tr, vertex!(0; 0.0, 0.0; Circle, 2.0; 0)));
                     });
-
                     // 真实位姿
                     figure
                         .topic(POSE_TOPIC)
@@ -445,9 +448,9 @@ fn main() {
                 let _ = socket.send(&packet).await;
             });
             // 延时到下一周期
-            let mut ignored = Default::default();
-            let _ = async_std::io::stdin().read_line(&mut ignored).await;
-            // ticker.wait().await;
+            // let mut ignored = Default::default();
+            // let _ = async_std::io::stdin().read_line(&mut ignored).await;
+            ticker.wait().await;
         }
     });
 }
