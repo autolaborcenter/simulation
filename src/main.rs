@@ -8,7 +8,6 @@ use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Model, Pm1Predictor, TrajectoryPredictor, Velocity,
 };
 use pose_filter::{ParticleFilter, ParticleFilterParameters};
-use rand::{thread_rng, Rng};
 use std::{
     f32::consts::{FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
     time::Duration,
@@ -65,10 +64,11 @@ const PRE_TOPIC: &str = "pre";
 const PARTICLES_TOPIC: &str = "particle";
 const FILTERED_TOPIC: &str = "filtered";
 
-const FF: f32 = 2.0; // 倍速仿真
+const FF: Option<f32> = Some(3.0); // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const BEACON: Point2<f32> = point!(-0.15, 0.0);
+const ODOMETRY_ERROR: Gaussian = Gaussian::new(1.0, 0.02);
 
 const PERIOD: Duration = Duration::from_millis(40);
 const RGBD_ON_CHASSIS: Isometry2<f32> = pose!(0.1, 0);
@@ -99,6 +99,7 @@ fn main() {
         let model_measured = Pm1Model::new(0.465, 0.355, 0.12);
         // 底盘模型的实际值
         let model_real = Pm1Model::new(0.465, 0.355, 0.105);
+        let mut standard_gaussian = Gaussian::new(0.0, 1.0);
         let mut particle_filter = ParticleFilter::new(
             ParticleFilterParameters {
                 default_model: model_measured,
@@ -108,15 +109,14 @@ fn main() {
                 beacon_on_robot: BEACON,
                 max_inconsistency: 0.2,
             },
-            |model, weight, size| {
-                let mut rng = thread_rng();
+            move |model, weight, size| {
                 let k = (1.0 - weight) * 0.025;
                 (0..size)
                     .map(|_| {
                         Pm1Model::new(
                             model.width,
                             model.length,
-                            model.wheel * rng.gen_range(1.0 - k..1.0 + k),
+                            model.wheel * (1.0 + standard_gaussian.next() * k),
                         )
                     })
                     .collect()
@@ -161,7 +161,7 @@ fn main() {
             },
         ];
         let mut person = Person::new(
-            (50 as f32 / FF).round() as u8,
+            (50.0 / FF.unwrap_or(1.0)).round() as u8,
             0.4,
             pose!(-7681.0, -1898.0; 0.0),
         );
@@ -189,11 +189,12 @@ fn main() {
             context: TrackContext::new(Parameters {
                 search_range: rgbd,
                 light_radius: LIGHT_RADIUS,
-                auto_reinitialize: true,
                 r#loop: false,
+                auto_reinitialize: true,
             }),
         };
-        let mut ticker = Ticker::new(PERIOD.div_f32(FF));
+        let mut ticker = FF.map(|ff| Ticker::new(PERIOD.div_f32(ff)));
+        let mut odometry_error = ODOMETRY_ERROR;
         let mut time = Duration::ZERO;
         let mut person_time = time;
         let mut trend = 1.0;
@@ -206,15 +207,14 @@ fn main() {
                 person_time = time;
             }
             // 更新位姿
-            let mut gaussian = Gaussian::new(1.0, 0.02);
             if let Some(d) = predictor.next() {
                 chassis_pose += d;
                 let mut wheels = predictor.model.velocity_to_wheels(Velocity {
                     v: d.pose.translation.vector[0].signum() * d.s,
                     w: d.pose.rotation.im.signum() * d.a,
                 });
-                wheels.left *= gaussian.next();
-                wheels.right *= gaussian.next();
+                wheels.left *= odometry_error.next();
+                wheels.right *= odometry_error.next();
                 let d1 = particle_filter
                     .parameters
                     .default_model
@@ -229,12 +229,15 @@ fn main() {
                 particle_filter.measure(t, p);
             }
             let filtered = particle_filter.get();
-            let best = particle_filter.particles().get(0);
+            let particles = particle_filter.particles();
+            let wheel = particles.iter().fold((0.0, 0.0), |(wheel, weight), p| {
+                (wheel + p.model.wheel * p.weight, weight + p.weight)
+            });
             println!(
-                "{:8?} {:.3} {:.3}",
+                "{:.2?} {:#.3} {:#.3}",
                 time,
                 (filtered.translation.vector - chassis_pose.pose.translation.vector).norm(),
-                best.map_or(0.0, |p| p.model.wheel),
+                wheel.0 / wheel.1,
             );
             // 构造障碍物对象
             let mut besieged = vec![];
@@ -365,8 +368,7 @@ fn main() {
             let predictor = predictor.clone();
             let rgbd_bounds = rgbd_bounds.clone();
             let local = tracker.path.slice(tracker.context.index)[0];
-            let particles = particle_filter
-                .particles()
+            let particles = particles
                 .iter()
                 .map(|p| vertex_from_pose!(0; p.pose; 0))
                 .collect::<Vec<_>>();
@@ -410,7 +412,7 @@ fn main() {
                     figure.with_topic(LIGHT_TOPIC, |mut topic| {
                         topic.clear();
                         topic.push(transform(
-                            &tr,
+                            &filtered,
                             vertex!(0; LIGHT_RADIUS, 0.0; Circle, LIGHT_RADIUS; 0),
                         ));
                         topic.push(vertex_from_pose!(0; local; 0));
@@ -480,10 +482,12 @@ fn main() {
                 });
                 let _ = socket.send(&packet).await;
             });
-            // 延时到下一周期
-            // let mut ignored = Default::default();
-            // let _ = async_std::io::stdin().read_line(&mut ignored).await;
-            ticker.wait().await;
+            if let Some(ticker) = ticker.as_mut() {
+                ticker.wait().await;
+            } else {
+                let mut ignored = Default::default();
+                let _ = async_std::io::stdin().read_line(&mut ignored).await;
+            }
         }
     });
 }

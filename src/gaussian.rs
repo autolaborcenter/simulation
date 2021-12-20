@@ -1,5 +1,6 @@
 ﻿use rand::{thread_rng, Rng};
 
+#[derive(Clone)]
 pub struct Gaussian {
     mu: f32,
     sigma: f32,
