@@ -90,7 +90,7 @@ fn main() {
         // 定位
         let mut location = Location::new(
             isometry(-0.15, 0.0, 1.0, 0.0),
-            Duration::from_millis(20),
+            Duration::from_millis(30),
             5.0,
             0.05,
         );
@@ -190,7 +190,6 @@ fn main() {
                 search_range: rgbd,
                 light_radius: LIGHT_RADIUS,
                 r#loop: false,
-                auto_reinitialize: true,
             }),
         };
         let mut ticker = FF.map(|ff| Ticker::new(PERIOD.div_f32(ff)));
@@ -249,10 +248,7 @@ fn main() {
                 obstacles.push(person.1.clone());
                 ray_cast(chassis_pose.pose, RGBD_ON_CHASSIS, obstacles, rgbd)
             };
-            let width = match tracker.context.state {
-                State::Initializing => 1.0,
-                _ => 0.7,
-            };
+            let width = 0.8;
             for convex in convex_from_origin(lidar.clone(), 0.8) {
                 match Obstacle::new(
                     RGBD_ON_CHASSIS,
