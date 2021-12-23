@@ -1,4 +1,4 @@
-﻿use crate::{Gaussian, Isometry2, Point2};
+﻿use crate::{gaussian, Isometry2, Point2};
 use rand::{thread_rng, RngCore};
 use std::{collections::VecDeque, time::Duration};
 
@@ -7,7 +7,7 @@ pub(crate) const ODOMETRY_TOPIC: &str = "odometry";
 
 pub(crate) struct Location {
     beacon_on_robot: Isometry2<f32>,
-    gaussian: Gaussian,
+    sigma: f32,
     period: Duration,
     delay: Duration,
     deadline: Duration,
@@ -19,7 +19,7 @@ impl Location {
     pub fn new(pose: Isometry2<f32>, delay: Duration, frequency: f32, sigma: f32) -> Self {
         Self {
             beacon_on_robot: pose,
-            gaussian: Gaussian::new(0.0, sigma),
+            sigma,
             period: Duration::from_secs_f32(1.0 / frequency),
             delay,
             deadline: Duration::ZERO,
@@ -43,7 +43,10 @@ impl Location {
                     let v = (pose * self.beacon_on_robot).translation.vector;
                     result = Some((
                         time,
-                        point!(v[0] + self.gaussian.next(), v[1] + self.gaussian.next()),
+                        point!(
+                            v[0] + gaussian() * self.sigma,
+                            v[1] + gaussian() * self.sigma
+                        ),
                     ));
                 }
             }

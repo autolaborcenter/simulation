@@ -6,7 +6,7 @@ use path_tracking::{Parameters, PathFile, Sector, State, TrackContext, Tracker};
 use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Model, Pm1Predictor, TrajectoryPredictor, Velocity,
 };
-use pose_filter::{Gaussian, ParticleFilter, ParticleFilterParameters};
+use pose_filter::{gaussian, ParticleFilter, ParticleFilterParameters};
 use std::{
     f32::consts::{FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
     time::Duration,
@@ -66,8 +66,6 @@ const FF: Option<f32> = Some(3.0); // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
 const BEACON: Point2<f32> = point!(-0.15, 0.0);
-const ODOMETRY_ERROR: Gaussian = Gaussian::new(1.0, 0.02);
-
 const PERIOD: Duration = Duration::from_millis(40);
 const RGBD_ON_CHASSIS: Isometry2<f32> = pose!(0.1, 0);
 const RGBD_METERS: f32 = 4.0;
@@ -97,7 +95,6 @@ fn main() {
         let model_measured = Pm1Model::new(0.465, 0.355, 0.12);
         // 底盘模型的实际值
         let model_real = Pm1Model::new(0.465, 0.355, 0.105);
-        let mut standard_gaussian = Gaussian::new(0.0, 1.0);
         let mut particle_filter = ParticleFilter::new(
             ParticleFilterParameters {
                 incremental_timeout: Duration::from_secs(3),
@@ -108,17 +105,12 @@ fn main() {
                 beacon_on_robot: BEACON,
                 max_inconsistency: 0.2,
             },
-            move |model, weight, size| {
-                let k = (1.0 - weight) * 0.025;
-                (0..size)
-                    .map(|_| {
-                        Pm1Model::new(
-                            model.width,
-                            model.length,
-                            model.wheel * (1.0 + standard_gaussian.next() * k),
-                        )
-                    })
-                    .collect()
+            move |model, weight| {
+                Pm1Model::new(
+                    model.width,
+                    model.length,
+                    model.wheel * (1.0 + gaussian() * (1.0 - weight) * 0.025),
+                )
             },
         );
         // 底盘运动仿真
@@ -192,7 +184,6 @@ fn main() {
             }),
         };
         let mut ticker = FF.map(|ff| Ticker::new(PERIOD.div_f32(ff)));
-        let mut odometry_error = ODOMETRY_ERROR;
         let mut time = Duration::ZERO;
         let mut person_time = time;
         let mut trend = 1.0;
@@ -211,8 +202,8 @@ fn main() {
                     v: d.pose.translation.vector[0].signum() * d.s,
                     w: d.pose.rotation.im.signum() * d.a,
                 });
-                wheels.left *= odometry_error.next();
-                wheels.right *= odometry_error.next();
+                wheels.left *= gaussian() * 0.02 + 1.0;
+                wheels.right *= gaussian() * 0.02 + 1.0;
                 let d1 = particle_filter
                     .parameters
                     .default_model
