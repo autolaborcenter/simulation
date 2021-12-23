@@ -1,4 +1,4 @@
-﻿use crate::{gaussian::Gaussian, Isometry2, Point2};
+﻿use crate::{Gaussian, Isometry2, Point2};
 use rand::{thread_rng, RngCore};
 use std::{collections::VecDeque, time::Duration};
 

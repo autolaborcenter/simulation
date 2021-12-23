@@ -1,4 +1,3 @@
-use crate::gaussian::Gaussian;
 use async_std::{net::UdpSocket, path::PathBuf, sync::Arc, task};
 use monitor_tool::{rgba, vertex, Encoder, Shape, Vertex};
 use nalgebra::{Isometry2, Point2, Vector2};
@@ -7,7 +6,7 @@ use path_tracking::{Parameters, PathFile, Sector, State, TrackContext, Tracker};
 use pm1_control_model::{
     isometry, Odometry, Optimizer, Physical, Pm1Model, Pm1Predictor, TrajectoryPredictor, Velocity,
 };
-use pose_filter::{ParticleFilter, ParticleFilterParameters};
+use pose_filter::{Gaussian, ParticleFilter, ParticleFilterParameters};
 use std::{
     f32::consts::{FRAC_PI_3, FRAC_PI_4, FRAC_PI_8, PI},
     time::Duration,
@@ -46,7 +45,6 @@ macro_rules! point {
 }
 
 mod chassis;
-mod gaussian;
 mod locate;
 mod outlines;
 mod ray_cast;
@@ -102,6 +100,7 @@ fn main() {
         let mut standard_gaussian = Gaussian::new(0.0, 1.0);
         let mut particle_filter = ParticleFilter::new(
             ParticleFilterParameters {
+                incremental_timeout: Duration::from_secs(3),
                 default_model: model_measured,
                 memory_rate: 0.75,
                 count: 80,
@@ -228,15 +227,21 @@ fn main() {
                 particle_filter.measure(t, p);
             }
             let filtered = particle_filter.get();
-            let particles = particle_filter.particles();
-            let wheel = particles.iter().fold((0.0, 0.0), |(wheel, weight), p| {
-                (wheel + p.model.wheel * p.weight, weight + p.weight)
-            });
+            let wheel = particle_filter
+                .particles()
+                .iter()
+                .fold((0.0, 0.0), |(wheel, weight), p| {
+                    (wheel + p.model.wheel * p.weight, weight + p.weight)
+                });
+            let wheel = wheel.0 / wheel.1;
+            if wheel.is_normal() {
+                particle_filter.parameters.default_model.wheel = wheel;
+            }
             println!(
                 "{:.2?} {:#.3} {:#.3}",
                 time,
                 (filtered.translation.vector - chassis_pose.pose.translation.vector).norm(),
-                wheel.0 / wheel.1,
+                wheel,
             );
             // 构造障碍物对象
             let mut besieged = vec![];
@@ -364,7 +369,8 @@ fn main() {
             let predictor = predictor.clone();
             let rgbd_bounds = rgbd_bounds.clone();
             let local = tracker.path.slice(tracker.context.index)[0];
-            let particles = particles
+            let particles = particle_filter
+                .particles()
                 .iter()
                 .map(|p| vertex_from_pose!(0; p.pose; 0))
                 .collect::<Vec<_>>();
