@@ -228,12 +228,14 @@ fn main() {
             if wheel.is_normal() {
                 particle_filter.parameters.default_model.wheel = wheel;
             }
-            println!(
-                "{:.2?} {:#.3} {:#.3}",
-                time,
-                (filtered.translation.vector - chassis_pose.pose.translation.vector).norm(),
-                wheel,
-            );
+            if let Some(p) = filtered {
+                println!(
+                    "{:.2?} {:#.3?} {:#.3}",
+                    time,
+                    (p.translation.vector - chassis_pose.pose.translation.vector).norm(),
+                    wheel,
+                );
+            }
             // 构造障碍物对象
             let mut besieged = vec![];
             let mut obstacles = vec![];
@@ -259,7 +261,8 @@ fn main() {
                     }
                 }
             }
-            predictor.predictor.target = if besieged.is_empty() {
+            predictor.predictor.target = if besieged.is_empty() && filtered.is_some() {
+                let filtered = filtered.unwrap();
                 match tracker.track(filtered) {
                     Err(_) => Physical {
                         speed: TRACK_SPEED,
@@ -381,9 +384,11 @@ fn main() {
                         .topic(ODOMETRY_TOPIC)
                         .push(vertex_from_pose!(0; odometry.pose; 0));
                     // 滤波
-                    figure
-                        .topic(FILTERED_TOPIC)
-                        .push(vertex_from_pose!(0; filtered; 0));
+                    if let Some(p) = filtered {
+                        figure
+                            .topic(FILTERED_TOPIC)
+                            .push(vertex_from_pose!(0; p; 0));
+                    }
                     // 定位
                     if let Some((_, p)) = locate {
                         figure
@@ -404,10 +409,13 @@ fn main() {
                     });
                     figure.with_topic(LIGHT_TOPIC, |mut topic| {
                         topic.clear();
-                        topic.push(transform(
-                            &filtered,
-                            vertex!(0; LIGHT_RADIUS, 0.0; Circle, LIGHT_RADIUS; 0),
-                        ));
+                        if let Some(p) = filtered {
+                            topic.push(transform(
+                                &p,
+                                vertex!(0; LIGHT_RADIUS, 0.0; Circle, LIGHT_RADIUS; 0),
+                            ));
+                        }
+
                         topic.push(vertex_from_pose!(0; local; 0));
                     });
                     figure.with_topic(MOVING_TOPIC, |mut topic| {
