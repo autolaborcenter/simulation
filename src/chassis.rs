@@ -1,5 +1,5 @@
 ﻿use crate::{transform, vector, Isometry2};
-use monitor_tool::{vertex, Vertex};
+use monitor_tool::{vertex, Shape, Vertex};
 use rand::Rng;
 use std::f32::consts::FRAC_PI_2;
 

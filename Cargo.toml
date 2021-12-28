@@ -13,7 +13,7 @@ nalgebra = "*"  # 线性代数
 
 # 显示
 monitor-tool = { path = "../monitor-tool-rs", default-features = false, features = [
-    "sender",
+    "client",
 ] }
 # 底盘运动
 pm1-control-model = { path = "../pm1-control-model", default-features = false }
