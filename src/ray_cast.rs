@@ -38,7 +38,7 @@ pub(crate) fn ray_cast(
             .into(),
         );
         theta += STEP;
-        obstacles
+        let _ = obstacles
             .iter()
             .filter_map(|c| ray.ray_cast(c))
             .min_by(|a, b| a.partial_cmp(b).unwrap())
@@ -101,7 +101,7 @@ impl Segment {
                         p0 = *p;
                         result
                     })
-                    .reduce(|a, b| f32::min(a, b))
+                    .reduce(f32::min)
             }
         }
         .map(|t| self.len() * t)

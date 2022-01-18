@@ -4,7 +4,7 @@ use nalgebra::{Isometry2, Point2, Vector2};
 use obstacle_avoidance::{convex_from_origin, fit, Obstacle, ObstacleError::*, Polar};
 use path_tracking::{Parameters, PathFile, Sector, State, TrackContext, Tracker};
 use pm1_control_model::{
-    isometry, Odometry, Optimizer, Physical, Pm1Model, Pm1Predictor, TrajectoryPredictor, Velocity,
+    Odometry, Optimizer, Physical, Pm1Model, Pm1Predictor, TrajectoryPredictor, Velocity,
 };
 use pose_filter::{gaussian, ParticleFilter, ParticleFilterParameters};
 use std::{
@@ -25,11 +25,11 @@ macro_rules! vertex_from_pose {
 
 macro_rules! pose {
     ($x:expr, $y:expr) => {
-        pm1_control_model::isometry($x as f32, $y as f32, 1.0, 0.0)
+        isometry($x as f32, $y as f32, 1.0, 0.0)
     };
     ($x:expr, $y:expr; $theta:expr) => {{
         let (sin, cos) = ($theta as f32).sin_cos();
-        pm1_control_model::isometry($x as f32, $y as f32, cos, sin)
+        isometry($x as f32, $y as f32, cos, sin)
     }};
 }
 
@@ -65,7 +65,7 @@ const FILTERED_TOPIC: &str = "filtered";
 const FF: Option<f32> = Some(3.0); // 倍速仿真
 const PATH_TO_TRACK: &str = "1105-1"; // 路径名字
 
-const BEACON: Point2<f32> = point!(-0.15, 0.0);
+const BEACON: Point2<f32> = point!(-0.3, 0.15);
 const PERIOD: Duration = Duration::from_millis(40);
 const RGBD_ON_CHASSIS: Isometry2<f32> = pose!(0.1, 0);
 const RGBD_METERS: f32 = 4.0;
@@ -85,25 +85,23 @@ fn main() {
         };
         // 定位
         let mut location = Location::new(
-            isometry(-0.15, 0.0, 1.0, 0.0),
+            isometry(-0.3, 0.15, 1.0, 0.0),
             Duration::from_millis(30),
             5.0,
-            0.05,
+            0.1,
         );
         let mut odometry = chassis_pose;
         // 底盘模型的测量值
-        let model_measured = Pm1Model::new(0.465, 0.355, 0.12);
+        let model_measured = Pm1Model::new(0.460, 0.355, 0.106);
         // 底盘模型的实际值
-        let model_real = Pm1Model::new(0.465, 0.355, 0.105);
+        let model_real = Pm1Model::new(0.460, 0.355, 0.103);
         let mut particle_filter = ParticleFilter::new(
             ParticleFilterParameters {
                 incremental_timeout: Duration::from_secs(3),
                 default_model: model_measured,
-                memory_rate: 0.75,
-                count: 80,
-                measure_weight: 8.0,
+                memory_rate: 0.8,
+                count: 50,
                 beacon_on_robot: BEACON,
-                max_inconsistency: 0.2,
             },
             move |model, weight| {
                 Pm1Model::new(
@@ -215,7 +213,7 @@ fn main() {
             // 定位
             let locate = location.update(time, chassis_pose.pose);
             if let Some((t, p)) = locate {
-                particle_filter.measure(t, p);
+                particle_filter.measure(t, p, 0.1);
             }
             let filtered = particle_filter.get();
             let wheel = particle_filter
@@ -261,8 +259,9 @@ fn main() {
                     }
                 }
             }
-            predictor.predictor.target = if besieged.is_empty() && filtered.is_some() {
-                let filtered = filtered.unwrap();
+            predictor.predictor.target = if !besieged.is_empty() {
+                Physical::RELEASED
+            } else if let Some(filtered) = filtered {
                 match tracker.track(filtered) {
                     Err(_) => Physical {
                         speed: TRACK_SPEED,
@@ -371,10 +370,9 @@ fn main() {
             task::spawn(async move {
                 let tr = chassis_pose.pose;
                 let packet = Encoder::with(|figure| {
-                    figure.with_topic(FOCUS_TOPIC, |mut light| {
-                        light.clear();
-                        light.push(transform(&tr, vertex!(0; 0.0, 0.0; Circle, 2.0; 0)));
-                    });
+                    figure
+                        .topic(FOCUS_TOPIC)
+                        .push(transform(&tr, vertex!(0; 0.0, 0.0; Circle, 2.0; 0)));
                     // 真实位姿
                     figure
                         .topic(POSE_TOPIC)
@@ -628,4 +626,15 @@ fn send_config(
 const fn vector(x: f32, y: f32) -> Vector2<f32> {
     use nalgebra::{ArrayStorage, OVector};
     OVector::from_array_storage(ArrayStorage([[x, y]]))
+}
+
+#[inline]
+const fn isometry(x: f32, y: f32, cos: f32, sin: f32) -> Isometry2<f32> {
+    use nalgebra::{Complex, Translation, Unit};
+    Isometry2 {
+        translation: Translation {
+            vector: vector(x, y),
+        },
+        rotation: Unit::new_unchecked(Complex { re: cos, im: sin }),
+    }
 }
